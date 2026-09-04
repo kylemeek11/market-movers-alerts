@@ -2,10 +2,10 @@ name: Market Movers alerts
 
 on:
   schedule:
-    # Every 5 minutes, 12:00-22:00 UTC, weekdays. That window covers US
-    # pre-market through after-hours in both EST and EDT; the script itself
-    # checks the actual market clock and exits immediately when closed.
-    - cron: "*/5 12-22 * * 1-5"
+    # Every 5 minutes, around the clock. Crypto never closes, so the script
+    # screens it on every run; the stock screen inside the script checks the
+    # real market clock and skips itself when the market is shut.
+    - cron: "*/5 * * * *"
   workflow_dispatch:
     inputs:
       test_push:
@@ -13,7 +13,7 @@ on:
         type: boolean
         default: false
       force_run:
-        description: "Run even when the market is closed"
+        description: "Screen stocks even when the market is closed"
         type: boolean
         default: false
 
@@ -41,7 +41,7 @@ jobs:
         run: pip install --quiet -r requirements.txt
 
       # Alert state has to survive between runs, otherwise every run would
-      # re-announce the same stock. Each run writes a new cache entry; the
+      # re-announce the same mover. Each run writes a new cache entry; the
       # restore-key prefix pulls back the most recent one.
       - name: Restore alert state
         uses: actions/cache/restore@v4
@@ -55,7 +55,9 @@ jobs:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           TEST_PUSH: ${{ inputs.test_push && '1' || '0' }}
           FORCE_RUN: ${{ inputs.force_run && '1' || '0' }}
-        run: python alerts_bot.py
+        run: |
+          mkdir -p state
+          python alerts_bot.py
 
       - name: Save alert state
         if: always()
