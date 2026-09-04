@@ -260,10 +260,12 @@ def screen_crypto():
         price = c.get("current_price") or 0
         vol = c.get("total_volume") or 0
         cap = c.get("market_cap") or 0
+        if chg is None:
+            continue
         hour = c.get("price_change_percentage_1h_in_currency")
         big_enough = float(chg) >= min(CRYPTO_ALERT_LEVELS)
         moving_now = hour is not None and float(hour) >= CRYPTO_VELOCITY_1H
-        if chg is None or not (big_enough or moving_now):
+        if not (big_enough or moving_now):
             continue
         if vol < CRYPTO_MIN_24H_VOLUME or cap < CRYPTO_MIN_MARKET_CAP:
             continue
