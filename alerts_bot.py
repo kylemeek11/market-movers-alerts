@@ -54,6 +54,13 @@ RELVOL_MIN_GAIN = 3.0                  # and it has to actually be rising
 SESSION_OPEN_MIN = 9 * 60 + 30         # 9:30 ET
 SESSION_MINUTES = 390                  # 6.5h regular session
 
+# Robinhood gate: there is no public API for what Robinhood lists, but its own
+# public pages 404 for anything it does not carry, so the alert link itself is
+# the check. Only candidates that already cleared a threshold get checked, and
+# each answer is cached for the day, so this is a handful of HEAD requests.
+CHECK_ROBINHOOD = True
+ROBINHOOD_TIMEOUT = 8
+
 # --- Shared -----------------------------------------------------------------
 MAX_ALERTS_PER_RUN = 6
 HIGH_PRIORITY_LEVEL = 20.0             # stocks at/above this break through silence
@@ -289,11 +296,12 @@ def load_state():
     try:
         state = json.loads(STATE_FILE.read_text())
         if state.get("date") == today:
+            state.setdefault("tradable", {})
             return state
         log("  state is from a previous day - starting fresh")
     except (OSError, ValueError):
         log("  no previous state found")
-    return {"date": today, "fired": {}}
+    return {"date": today, "fired": {}, "tradable": {}}
 
 
 def save_state(state):
@@ -310,6 +318,46 @@ def robinhood_url(row):
     if row["kind"] == "crypto":
         return f"https://robinhood.com/crypto/{row['symbol']}"
     return f"https://robinhood.com/stocks/{row['symbol']}"
+
+
+def robinhood_tradable(row, cache):
+    """Is this symbol actually buyable on Robinhood?
+
+    Cached per symbol for the life of the state file (one day). On any
+    network trouble we return True: a false positive is a wasted tap, a
+    false negative is a missed run, and the missed run is the worse error.
+    """
+    if not CHECK_ROBINHOOD:
+        return True
+    key = f"{row['kind']}:{row['symbol']}"
+    if key in cache:
+        return cache[key]
+
+    import urllib.request
+    import urllib.error
+
+    req = urllib.request.Request(
+        robinhood_url(row),
+        method="HEAD",
+        headers={"User-Agent": "Mozilla/5.0 (compatible; market-movers-alerts/1.0)"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=ROBINHOOD_TIMEOUT) as resp:
+            ok = resp.status < 400
+    except urllib.error.HTTPError as exc:
+        ok = exc.code < 400          # a 404 here is a real answer: not listed
+    except Exception as exc:
+        log(f"  Robinhood check failed for {row['symbol']} ({exc}) - allowing")
+        return True                  # do not go silent on a network blip
+    cache[key] = ok
+    if not ok:
+        log(f"  skip {row['symbol']} - not tradable on Robinhood")
+    return ok
+
+
+def filter_tradable(items, cache, row_index):
+    """Keep only entries whose symbol Robinhood actually carries."""
+    return [it for it in items if robinhood_tradable(it[row_index], cache)]
 
 
 def format_body(row):
@@ -445,6 +493,7 @@ def main():
     now_ts = datetime.now(timezone.utc).timestamp()
     state = load_state()
     fired = state["fired"]
+    tradable = state["tradable"]
 
     # --- Crypto: always, it never closes ---
     crypto_rows = screen_crypto()
@@ -452,14 +501,16 @@ def main():
 
     # Velocity first: this is the early signal, so it goes out ahead of the
     # magnitude alerts if the run cap forces a choice.
-    vel = collect_velocity(crypto_rows, fired, now_ts)
-    log(f"{len(vel)} coins moving hard this hour"
+    vel = filter_tradable(collect_velocity(crypto_rows, fired, now_ts),
+                          tradable, 1)
+    log(f"{len(vel)} tradable coins moving hard this hour"
         f"{' (quiet hours)' if quiet else ''}")
     send_velocity(vel, fired, now_ts, quiet)
 
-    crypto_pending = collect_pending(crypto_rows, CRYPTO_ALERT_LEVELS,
-                                     fired, "crypto")
-    log(f"{len(crypto_pending)} new crypto threshold crossings")
+    crypto_pending = filter_tradable(
+        collect_pending(crypto_rows, CRYPTO_ALERT_LEVELS, fired, "crypto"),
+        tradable, 2)
+    log(f"{len(crypto_pending)} new tradable crypto threshold crossings")
     send_alerts(crypto_pending, fired, CRYPTO_HIGH_PRIORITY_LEVEL, quiet)
 
     # --- Stocks: market hours only ---
@@ -483,14 +534,17 @@ def main():
         if fraction is None:
             log("  outside the regular session - skipping relative volume")
         else:
-            rv = collect_relvol(stock_rows, fired, now_ts, fraction)
-            log(f"{len(rv)} stocks trading above {RELVOL_MIN:.0f}x normal "
+            rv = filter_tradable(
+                collect_relvol(stock_rows, fired, now_ts, fraction),
+                tradable, 1)
+            log(f"{len(rv)} tradable stocks above {RELVOL_MIN:.0f}x normal "
                 f"({fraction * 100:.0f}% of the session elapsed)")
             send_relvol(rv, fired, now_ts, quiet)
 
         movers = [r for r in stock_rows if r["pct"] >= MIN_GAIN_PCT]
-        stock_pending = collect_pending(movers, ALERT_LEVELS, fired, "stock")
-        log(f"{len(stock_pending)} new stock threshold crossings")
+        stock_pending = filter_tradable(
+            collect_pending(movers, ALERT_LEVELS, fired, "stock"), tradable, 2)
+        log(f"{len(stock_pending)} new tradable stock threshold crossings")
         send_alerts(stock_pending, fired, HIGH_PRIORITY_LEVEL, quiet)
     else:
         log("Outside market hours - skipping the stock screen")
