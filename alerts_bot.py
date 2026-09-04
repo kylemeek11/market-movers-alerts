@@ -39,6 +39,21 @@ CRYPTO_MIN_24H_VOLUME = 10_000_000     # USD traded in 24h
 CRYPTO_MIN_MARKET_CAP = 50_000_000
 CRYPTO_TOP_N = 250                     # how many coins by market cap to watch
 
+# Velocity: what is moving RIGHT NOW, rather than what has already moved.
+# A coin up sharply in the last hour while its 24h number is still modest is
+# early in a run; the same hourly jump on top of +95% is the tail of one.
+CRYPTO_VELOCITY_1H = 6.0               # up this much in the last hour
+CRYPTO_VELOCITY_MAX_24H = 25.0         # but not already run further than this
+VELOCITY_COOLDOWN_SEC = 4 * 3600       # re-alert the same name at most this often
+
+# Relative volume: unusual participation usually shows up before the big
+# price move does. Today's volume is projected to a full session and compared
+# against the 3-month average.
+RELVOL_MIN = 3.0                       # projected volume vs normal
+RELVOL_MIN_GAIN = 3.0                  # and it has to actually be rising
+SESSION_OPEN_MIN = 9 * 60 + 30         # 9:30 ET
+SESSION_MINUTES = 390                  # 6.5h regular session
+
 # --- Shared -----------------------------------------------------------------
 MAX_ALERTS_PER_RUN = 6
 HIGH_PRIORITY_LEVEL = 20.0             # stocks at/above this break through silence
@@ -96,6 +111,23 @@ def in_quiet_hours():
     return now.hour >= QUIET_START_HOUR or now.hour < QUIET_END_HOUR
 
 
+def session_fraction():
+    """How much of the regular session has elapsed, or None if it is shut.
+
+    Volume-so-far is meaningless against a full-day average unless you
+    normalise for the time of day, so relative volume is only computed
+    inside the regular session.
+    """
+    now = local_now(MARKET_TZ)
+    if now is None or now.weekday() >= 5:
+        return None
+    mins = (now.hour * 60 + now.minute) - SESSION_OPEN_MIN
+    if mins <= 0 or mins > SESSION_MINUTES:
+        return None
+    # Floor the divisor: in the first few minutes the projection is wild.
+    return max(mins / float(SESSION_MINUTES), 0.10)
+
+
 def push(title, message, priority="default", tags="chart_with_upwards_trend",
          click=None):
     """Send one notification. Headers must be ASCII; the body may be UTF-8."""
@@ -134,12 +166,12 @@ def push(title, message, priority="default", tags="chart_with_upwards_trend",
 
 # --- Screens ----------------------------------------------------------------
 
-def screen_stocks(yf):
+def screen_stocks(yf, floor):
     from yfinance import EquityQuery
 
     def build(with_cap):
         terms = [
-            EquityQuery("gt", ["percentchange", MIN_GAIN_PCT]),
+            EquityQuery("gt", ["percentchange", floor]),
             EquityQuery("eq", ["region", "us"]),
             EquityQuery("gt", ["dayvolume", MIN_DAY_VOLUME]),
             EquityQuery("gt", ["intradayprice", MIN_PRICE]),
@@ -173,7 +205,7 @@ def screen_stocks(yf):
         chg = q.get("regularMarketChangePercent")
         price = q.get("regularMarketPrice") or 0
         vol = q.get("regularMarketVolume") or 0
-        if chg is None or chg < MIN_GAIN_PCT:
+        if chg is None or chg < floor:
             continue
         if price < MIN_PRICE or vol < MIN_DAY_VOLUME:
             continue
@@ -189,6 +221,9 @@ def screen_stocks(yf):
             "price": float(price),
             "dollars": float(price) * float(vol),
             "hour_pct": None,
+            "volume": float(vol),
+            "avg_volume": float(q.get("averageDailyVolume3Month")
+                                or q.get("averageDailyVolume10Day") or 0),
         })
     out.sort(key=lambda r: -r["pct"])
     return out
@@ -225,7 +260,10 @@ def screen_crypto():
         price = c.get("current_price") or 0
         vol = c.get("total_volume") or 0
         cap = c.get("market_cap") or 0
-        if chg is None or float(chg) < min(CRYPTO_ALERT_LEVELS):
+        hour = c.get("price_change_percentage_1h_in_currency")
+        big_enough = float(chg) >= min(CRYPTO_ALERT_LEVELS)
+        moving_now = hour is not None and float(hour) >= CRYPTO_VELOCITY_1H
+        if chg is None or not (big_enough or moving_now):
             continue
         if vol < CRYPTO_MIN_24H_VOLUME or cap < CRYPTO_MIN_MARKET_CAP:
             continue
@@ -236,7 +274,7 @@ def screen_crypto():
             "pct": float(chg),
             "price": float(price),
             "dollars": float(vol),
-            "hour_pct": c.get("price_change_percentage_1h_in_currency"),
+            "hour_pct": hour,
         })
     out.sort(key=lambda r: -r["pct"])
     return out
@@ -284,6 +322,68 @@ def format_body(row):
     else:
         line3 = f"${row['dollars'] / 1e6:,.0f}M traded"
     return f"{row['name']}\n{line2}\n{line3}"
+
+
+def collect_velocity(rows, fired, now_ts):
+    """Coins moving hard this hour that have not already run away."""
+    out = []
+    for r in rows:
+        hour = r.get("hour_pct")
+        if hour is None or float(hour) < CRYPTO_VELOCITY_1H:
+            continue
+        if r["pct"] > CRYPTO_VELOCITY_MAX_24H:
+            continue          # the move already happened; this is the tail
+        key = f"cryptovel:{r['symbol']}"
+        if now_ts - fired.get(key, 0) < VELOCITY_COOLDOWN_SEC:
+            continue
+        out.append((key, r))
+    out.sort(key=lambda t: -float(t[1]["hour_pct"]))
+    return out
+
+
+def collect_relvol(rows, fired, now_ts, fraction):
+    """Stocks trading far above their normal pace, and rising."""
+    out = []
+    for r in rows:
+        avg = r.get("avg_volume") or 0
+        if avg <= 0 or r["pct"] < RELVOL_MIN_GAIN:
+            continue
+        projected = r["volume"] / fraction
+        ratio = projected / avg
+        if ratio < RELVOL_MIN:
+            continue
+        key = f"relvol:{r['symbol']}"
+        if now_ts - fired.get(key, 0) < VELOCITY_COOLDOWN_SEC:
+            continue
+        out.append((key, r, ratio))
+    out.sort(key=lambda t: -t[2])
+    return out
+
+
+def send_velocity(pending, fired, now_ts, quiet):
+    for key, r in pending[:MAX_ALERTS_PER_RUN]:
+        fired[key] = now_ts
+        push(f"{r['symbol']} running {float(r['hour_pct']):+.1f}%/hr",
+             format_body(r),
+             priority="low" if quiet else "high",
+             tags="rocket",
+             click=robinhood_url(r))
+        log(f"  VELOCITY {r['symbol']} 1h {float(r['hour_pct']):+.1f}% "
+            f"(24h {r['pct']:+.1f}%)")
+
+
+def send_relvol(pending, fired, now_ts, quiet):
+    for key, r, ratio in pending[:MAX_ALERTS_PER_RUN]:
+        fired[key] = now_ts
+        body = (f"{r['name']}\n"
+                f"now +{r['pct']:.1f}%  -  ${r['price']:,.2f}\n"
+                f"{ratio:.1f}x normal volume for this time of day")
+        push(f"{r['symbol']} unusual volume {ratio:.1f}x",
+             body,
+             priority="low" if quiet else "high",
+             tags="eyes",
+             click=robinhood_url(r))
+        log(f"  RELVOL {r['symbol']} {ratio:.1f}x on +{r['pct']:.1f}%")
 
 
 def collect_pending(rows, levels, fired, prefix):
@@ -340,16 +440,24 @@ def main():
 
     force = os.environ.get("FORCE_RUN") == "1"
     quiet = in_quiet_hours()
+    now_ts = datetime.now(timezone.utc).timestamp()
     state = load_state()
     fired = state["fired"]
 
     # --- Crypto: always, it never closes ---
     crypto_rows = screen_crypto()
     log(f"{len(crypto_rows)} coins pass the crypto filters")
+
+    # Velocity first: this is the early signal, so it goes out ahead of the
+    # magnitude alerts if the run cap forces a choice.
+    vel = collect_velocity(crypto_rows, fired, now_ts)
+    log(f"{len(vel)} coins moving hard this hour"
+        f"{' (quiet hours)' if quiet else ''}")
+    send_velocity(vel, fired, now_ts, quiet)
+
     crypto_pending = collect_pending(crypto_rows, CRYPTO_ALERT_LEVELS,
                                      fired, "crypto")
-    log(f"{len(crypto_pending)} new crypto threshold crossings"
-        f"{' (quiet hours)' if quiet else ''}")
+    log(f"{len(crypto_pending)} new crypto threshold crossings")
     send_alerts(crypto_pending, fired, CRYPTO_HIGH_PRIORITY_LEVEL, quiet)
 
     # --- Stocks: market hours only ---
@@ -360,10 +468,26 @@ def main():
             log("yfinance is not installed")
             save_state(state)
             return 2
-        stock_rows = screen_stocks(yf)
-        log(f"{len(stock_rows)} stocks pass the filters")
-        stock_pending = collect_pending(stock_rows, ALERT_LEVELS,
-                                        fired, "stock")
+
+        # Screen down to the relative-volume floor, which is lower than the
+        # magnitude floor - a stock only up 3% can still be the one running.
+        floor = min(MIN_GAIN_PCT, RELVOL_MIN_GAIN)
+        stock_rows = screen_stocks(yf, floor)
+        with_avg = sum(1 for r in stock_rows if (r.get("avg_volume") or 0) > 0)
+        log(f"{len(stock_rows)} stocks pass the screen "
+            f"({with_avg} with average-volume data)")
+
+        fraction = session_fraction()
+        if fraction is None:
+            log("  outside the regular session - skipping relative volume")
+        else:
+            rv = collect_relvol(stock_rows, fired, now_ts, fraction)
+            log(f"{len(rv)} stocks trading above {RELVOL_MIN:.0f}x normal "
+                f"({fraction * 100:.0f}% of the session elapsed)")
+            send_relvol(rv, fired, now_ts, quiet)
+
+        movers = [r for r in stock_rows if r["pct"] >= MIN_GAIN_PCT]
+        stock_pending = collect_pending(movers, ALERT_LEVELS, fired, "stock")
         log(f"{len(stock_pending)} new stock threshold crossings")
         send_alerts(stock_pending, fired, HIGH_PRIORITY_LEVEL, quiet)
     else:
