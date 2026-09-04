@@ -38,7 +38,7 @@ jobs:
           cache: pip
 
       - name: Install yfinance
-        run: pip install --quiet yfinance
+        run: pip install --quiet -r requirements.txt
 
       # Alert state has to survive between runs, otherwise every run would
       # re-announce the same stock. Each run writes a new cache entry; the
