@@ -67,6 +67,9 @@ CHECK_ROBINHOOD = True
 ROBINHOOD_TIMEOUT = 12
 ROBINHOOD_SCAN_BYTES = 600_000   # the field sits ~200KB in; no need for the rest
 TRADABILITY_RE = re.compile(rb'"tradability"\s*:\s*"([a-z_]+)"', re.I)
+# Bump when the tradability logic changes, so answers cached by an older and
+# possibly wrong version of the gate are thrown away instead of being trusted.
+GATE_VERSION = 2
 
 # --- Shared -----------------------------------------------------------------
 MAX_ALERTS_PER_RUN = 6
@@ -304,11 +307,16 @@ def load_state():
         state = json.loads(STATE_FILE.read_text())
         if state.get("date") == today:
             state.setdefault("tradable", {})
+            if state.get("gate") != GATE_VERSION:
+                log("  tradability cache came from an older gate - clearing")
+                state["tradable"] = {}
+                state["gate"] = GATE_VERSION
             return state
         log("  state is from a previous day - starting fresh")
     except (OSError, ValueError):
         log("  no previous state found")
-    return {"date": today, "fired": {}, "tradable": {}}
+    return {"date": today, "fired": {}, "tradable": {},
+            "gate": GATE_VERSION}
 
 
 def save_state(state):
