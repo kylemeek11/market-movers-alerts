@@ -81,11 +81,14 @@ MARKET_TZ = "America/New_York"
 MARKET_OPEN_HOUR = 8
 MARKET_CLOSE_HOUR = 17
 
-# Overnight, the phone's own Do Not Disturb does the silencing - the bot does
-# not second-guess it. What changes at night is the top end: a mover big
-# enough to be worth waking for goes out at max priority, which is the only
-# level a phone can be told to let through DND. Everything else sits at
-# default, visible in the morning without ever asking for an override.
+# Overnight the bot does the filtering, because the phone cannot. iOS lets you
+# allow an app through a Focus, but it is all-or-nothing - notification
+# priority does not enter into it. So between OVERNIGHT_START_HOUR and
+# OVERNIGHT_END_HOUR only movers past the high-priority threshold are sent at
+# all, and they go at max priority. Anything smaller is held back WITHOUT
+# being marked as fired, so it alerts normally after 7am if it still
+# qualifies. That way ntfy can be allowed through a Sleep Focus safely: the
+# only thing that can wake you is something genuinely big.
 USER_TZ = "America/Chicago"
 OVERNIGHT_START_HOUR = 22
 OVERNIGHT_END_HOUR = 7
@@ -134,8 +137,7 @@ def in_overnight():
 
 def priority_for(level, high_level, overnight):
     """Day: default, stepping up to high past the threshold.
-    Night: default, stepping up to max past the threshold - max is the level
-    a phone can be configured to let through Do Not Disturb.
+    Night: only the big ones are sent at all, and they go at max.
     """
     if level >= high_level:
         return "max" if overnight else "high"
@@ -455,13 +457,17 @@ def collect_relvol(rows, fired, now_ts, fraction):
 
 
 def send_velocity(pending, fired, now_ts, overnight):
+    if overnight:
+        # An early signal is by definition a small move so far - never worth
+        # a 3am wake-up, and not recorded, so it can fire again in daylight.
+        if pending:
+            log(f"  {len(pending)} velocity signals held until morning")
+        return
     for key, r in pending[:MAX_ALERTS_PER_RUN]:
         fired[key] = now_ts
-        # An early signal is by definition a small move so far. Worth seeing
-        # in the morning, not worth waking up for.
         push(f"{r['symbol']} running {float(r['hour_pct']):+.1f}%/hr",
              format_body(r),
-             priority="default" if overnight else "high",
+             priority="high",
              tags="rocket",
              click=robinhood_url(r))
         log(f"  VELOCITY {r['symbol']} 1h {float(r['hour_pct']):+.1f}% "
@@ -498,8 +504,15 @@ def collect_pending(rows, levels, fired, prefix):
 
 
 def send_alerts(pending, fired, high_level, overnight):
+    sent, held = 0, 0
     for level, key, r in pending[:MAX_ALERTS_PER_RUN]:
+        if overnight and level < high_level:
+            # Held, deliberately not recorded in `fired`, so the morning runs
+            # pick it up again if it is still running.
+            held += 1
+            continue
         fired[key] = level
+        sent += 1
         priority = priority_for(level, high_level, overnight)
         push(f"{r['symbol']} crossed +{level:.0f}%",
              format_body(r),
@@ -508,8 +521,11 @@ def send_alerts(pending, fired, high_level, overnight):
         log(f"  ALERT {r['symbol']} +{r['pct']:.1f}% "
             f"(crossed {level:.0f}%, {priority})")
 
+    if held:
+        log(f"  {held} held until morning (below the overnight bar)")
+
     extra = len(pending) - MAX_ALERTS_PER_RUN
-    if extra > 0:
+    if extra > 0 and sent:
         push("More movers crossing",
              f"{extra} more crossed a level. They'll follow shortly.",
              priority="default",
