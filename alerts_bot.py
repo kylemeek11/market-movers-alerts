@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -54,12 +55,18 @@ RELVOL_MIN_GAIN = 3.0                  # and it has to actually be rising
 SESSION_OPEN_MIN = 9 * 60 + 30         # 9:30 ET
 SESSION_MINUTES = 390                  # 6.5h regular session
 
-# Robinhood gate: there is no public API for what Robinhood lists, but its own
-# public pages 404 for anything it does not carry, so the alert link itself is
-# the check. Only candidates that already cleared a threshold get checked, and
-# each answer is cached for the day, so this is a handful of HEAD requests.
+# Robinhood gate: there is no public API for what Robinhood lists, so the alert
+# link itself is the check. A 404 means Robinhood has never heard of it - but a
+# 200 is NOT enough, because Robinhood publishes price pages for plenty of
+# coins it will not let you trade (DASH and UAI both render fine and are both
+# untradable). The page embeds the real answer as a "tradability" field, and
+# the first occurrence is the page's own asset, so that is what we read.
+# Only candidates that already cleared a threshold are checked, and each answer
+# is cached for the day, so this stays a handful of requests.
 CHECK_ROBINHOOD = True
-ROBINHOOD_TIMEOUT = 8
+ROBINHOOD_TIMEOUT = 12
+ROBINHOOD_SCAN_BYTES = 600_000   # the field sits ~200KB in; no need for the rest
+TRADABILITY_RE = re.compile(rb'"tradability"\s*:\s*"([a-z_]+)"', re.I)
 
 # --- Shared -----------------------------------------------------------------
 MAX_ALERTS_PER_RUN = 6
@@ -338,20 +345,35 @@ def robinhood_tradable(row, cache):
 
     req = urllib.request.Request(
         robinhood_url(row),
-        method="HEAD",
-        headers={"User-Agent": "Mozilla/5.0 (compatible; market-movers-alerts/1.0)"},
+        headers={"User-Agent": "Mozilla/5.0 (compatible; market-movers-alerts/1.0)",
+                 "Accept-Encoding": "identity"},   # keeps the partial read readable
     )
     try:
         with urllib.request.urlopen(req, timeout=ROBINHOOD_TIMEOUT) as resp:
-            ok = resp.status < 400
+            head = resp.read(ROBINHOOD_SCAN_BYTES)
     except urllib.error.HTTPError as exc:
-        ok = exc.code < 400          # a 404 here is a real answer: not listed
+        if exc.code == 404:
+            cache[key] = False       # Robinhood has never heard of it
+            log(f"  skip {row['symbol']} - no Robinhood listing (404)")
+            return False
+        log(f"  Robinhood check for {row['symbol']} returned {exc.code} - allowing")
+        return True
     except Exception as exc:
         log(f"  Robinhood check failed for {row['symbol']} ({exc}) - allowing")
         return True                  # do not go silent on a network blip
+
+    match = TRADABILITY_RE.search(head)
+    if not match:
+        # Page loaded but the field moved or is missing. Fail open and say so,
+        # rather than silently muting a real run.
+        log(f"  Robinhood tradability not found for {row['symbol']} - allowing")
+        return True
+
+    ok = match.group(1).lower() == b"tradable"
     cache[key] = ok
     if not ok:
-        log(f"  skip {row['symbol']} - not tradable on Robinhood")
+        log(f"  skip {row['symbol']} - Robinhood says "
+            f"{match.group(1).decode('ascii', 'replace')}")
     return ok
 
 
