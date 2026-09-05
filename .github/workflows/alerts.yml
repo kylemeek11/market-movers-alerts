@@ -50,6 +50,26 @@ jobs:
           key: mm-state-${{ github.run_id }}
           restore-keys: mm-state-
 
+      - name: Robinhood gate diagnostic
+        run: |
+          python - <<'PY'
+          import urllib.request, urllib.error
+          UA = "Mozilla/5.0 (compatible; market-movers-alerts/1.0)"
+          for kind, sym in [("crypto","BTC"), ("crypto","MARSCOIN"),
+                            ("crypto","ZZZZFAKE"), ("stocks","AAPL"),
+                            ("stocks","ZZZZFAKE")]:
+              url = f"https://robinhood.com/{kind}/{sym}"
+              req = urllib.request.Request(url, method="HEAD",
+                                           headers={"User-Agent": UA})
+              try:
+                  with urllib.request.urlopen(req, timeout=8) as r:
+                      print(f"{kind}/{sym:10s} -> {r.status}")
+              except urllib.error.HTTPError as e:
+                  print(f"{kind}/{sym:10s} -> HTTPError {e.code}")
+              except Exception as e:
+                  print(f"{kind}/{sym:10s} -> ERR {type(e).__name__}: {str(e)[:80]}")
+          PY
+
       - name: Run screener
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
