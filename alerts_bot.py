@@ -8,7 +8,8 @@ notification to your phone via ntfy when one crosses a level it hasn't
 crossed today. Each alert links straight to that symbol on Robinhood.
 
 Stocks are screened during market hours only; crypto trades around the
-clock, so it is screened on every run, with overnight alerts sent silently.
+clock, so it is screened on every run; overnight the phone's own Do Not
+Disturb does the silencing, and only the biggest movers ask to break through.
 
 Deliberately light: stocks need only the screener's quote payload and crypto
 is one CoinGecko call, so a run finishes in seconds.
@@ -80,11 +81,14 @@ MARKET_TZ = "America/New_York"
 MARKET_OPEN_HOUR = 8
 MARKET_CLOSE_HOUR = 17
 
-# Overnight crypto alerts are sent at low priority: they arrive silently and
-# are waiting in the morning rather than waking you up.
+# Overnight, the phone's own Do Not Disturb does the silencing - the bot does
+# not second-guess it. What changes at night is the top end: a mover big
+# enough to be worth waking for goes out at max priority, which is the only
+# level a phone can be told to let through DND. Everything else sits at
+# default, visible in the morning without ever asking for an override.
 USER_TZ = "America/Chicago"
-QUIET_START_HOUR = 22
-QUIET_END_HOUR = 7
+OVERNIGHT_START_HOUR = 22
+OVERNIGHT_END_HOUR = 7
 
 STATE_FILE = Path(os.environ.get("STATE_FILE", "state/alerts.json"))
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "").strip()
@@ -121,11 +125,21 @@ def market_is_open():
     return MARKET_OPEN_HOUR <= now.hour < MARKET_CLOSE_HOUR
 
 
-def in_quiet_hours():
+def in_overnight():
     now = local_now(USER_TZ)
     if now is None:
-        return False         # if the lookup fails, prefer a real alert
-    return now.hour >= QUIET_START_HOUR or now.hour < QUIET_END_HOUR
+        return False         # if the lookup fails, behave like daytime
+    return now.hour >= OVERNIGHT_START_HOUR or now.hour < OVERNIGHT_END_HOUR
+
+
+def priority_for(level, high_level, overnight):
+    """Day: default, stepping up to high past the threshold.
+    Night: default, stepping up to max past the threshold - max is the level
+    a phone can be configured to let through Do Not Disturb.
+    """
+    if level >= high_level:
+        return "max" if overnight else "high"
+    return "default"
 
 
 def session_fraction():
@@ -440,19 +454,21 @@ def collect_relvol(rows, fired, now_ts, fraction):
     return out
 
 
-def send_velocity(pending, fired, now_ts, quiet):
+def send_velocity(pending, fired, now_ts, overnight):
     for key, r in pending[:MAX_ALERTS_PER_RUN]:
         fired[key] = now_ts
+        # An early signal is by definition a small move so far. Worth seeing
+        # in the morning, not worth waking up for.
         push(f"{r['symbol']} running {float(r['hour_pct']):+.1f}%/hr",
              format_body(r),
-             priority="low" if quiet else "high",
+             priority="default" if overnight else "high",
              tags="rocket",
              click=robinhood_url(r))
         log(f"  VELOCITY {r['symbol']} 1h {float(r['hour_pct']):+.1f}% "
             f"(24h {r['pct']:+.1f}%)")
 
 
-def send_relvol(pending, fired, now_ts, quiet):
+def send_relvol(pending, fired, now_ts, overnight):
     for key, r, ratio in pending[:MAX_ALERTS_PER_RUN]:
         fired[key] = now_ts
         body = (f"{r['name']}\n"
@@ -460,7 +476,7 @@ def send_relvol(pending, fired, now_ts, quiet):
                 f"{ratio:.1f}x normal volume for this time of day")
         push(f"{r['symbol']} unusual volume {ratio:.1f}x",
              body,
-             priority="low" if quiet else "high",
+             priority="high",
              tags="eyes",
              click=robinhood_url(r))
         log(f"  RELVOL {r['symbol']} {ratio:.1f}x on +{r['pct']:.1f}%")
@@ -481,15 +497,10 @@ def collect_pending(rows, levels, fired, prefix):
     return pending
 
 
-def send_alerts(pending, fired, high_level, quiet):
+def send_alerts(pending, fired, high_level, overnight):
     for level, key, r in pending[:MAX_ALERTS_PER_RUN]:
         fired[key] = level
-        if quiet:
-            priority = "low"
-        elif level >= high_level:
-            priority = "high"
-        else:
-            priority = "default"
+        priority = priority_for(level, high_level, overnight)
         push(f"{r['symbol']} crossed +{level:.0f}%",
              format_body(r),
              priority=priority,
@@ -501,7 +512,7 @@ def send_alerts(pending, fired, high_level, quiet):
     if extra > 0:
         push("More movers crossing",
              f"{extra} more crossed a level. They'll follow shortly.",
-             priority="low" if quiet else "default",
+             priority="default",
              tags="fire")
         log(f"  {extra} queued for the next run")
 
@@ -519,7 +530,7 @@ def main():
         return 0
 
     force = os.environ.get("FORCE_RUN") == "1"
-    quiet = in_quiet_hours()
+    overnight = in_overnight()
     now_ts = datetime.now(timezone.utc).timestamp()
     state = load_state()
     fired = state["fired"]
@@ -534,14 +545,14 @@ def main():
     vel = filter_tradable(collect_velocity(crypto_rows, fired, now_ts),
                           tradable, 1)
     log(f"{len(vel)} tradable coins moving hard this hour"
-        f"{' (quiet hours)' if quiet else ''}")
-    send_velocity(vel, fired, now_ts, quiet)
+        f"{' (overnight)' if overnight else ''}")
+    send_velocity(vel, fired, now_ts, overnight)
 
     crypto_pending = filter_tradable(
         collect_pending(crypto_rows, CRYPTO_ALERT_LEVELS, fired, "crypto"),
         tradable, 2)
     log(f"{len(crypto_pending)} new tradable crypto threshold crossings")
-    send_alerts(crypto_pending, fired, CRYPTO_HIGH_PRIORITY_LEVEL, quiet)
+    send_alerts(crypto_pending, fired, CRYPTO_HIGH_PRIORITY_LEVEL, overnight)
 
     # --- Stocks: market hours only ---
     if force or market_is_open():
@@ -569,13 +580,13 @@ def main():
                 tradable, 1)
             log(f"{len(rv)} tradable stocks above {RELVOL_MIN:.0f}x normal "
                 f"({fraction * 100:.0f}% of the session elapsed)")
-            send_relvol(rv, fired, now_ts, quiet)
+            send_relvol(rv, fired, now_ts, overnight)
 
         movers = [r for r in stock_rows if r["pct"] >= MIN_GAIN_PCT]
         stock_pending = filter_tradable(
             collect_pending(movers, ALERT_LEVELS, fired, "stock"), tradable, 2)
         log(f"{len(stock_pending)} new tradable stock threshold crossings")
-        send_alerts(stock_pending, fired, HIGH_PRIORITY_LEVEL, quiet)
+        send_alerts(stock_pending, fired, HIGH_PRIORITY_LEVEL, overnight)
     else:
         log("Outside market hours - skipping the stock screen")
 
