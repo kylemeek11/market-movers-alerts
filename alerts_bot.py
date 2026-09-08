@@ -33,6 +33,13 @@ MIN_DAY_VOLUME = 100_000
 
 ALERT_LEVELS = [10.0, 15.0, 20.0, 30.0, 50.0]
 
+# ADRs and other foreign-domiciled listings. Yahoo does not label these
+# directly, but it does report the currency the company keeps its books in:
+# 17 Education comes back CNY, SoftBank JPY, Wing Yip KRW, while US operators
+# come back USD. A missing value is treated as domestic - leveraged ETFs omit
+# the field entirely and are not ADRs.
+EXCLUDE_FOREIGN = True
+
 # --- Crypto settings --------------------------------------------------------
 # Crypto is far more volatile than equities, so the thresholds start higher:
 # a 10% day is unremarkable for a coin and would just be noise.
@@ -199,6 +206,15 @@ def push(title, message, priority="default", tags="chart_with_upwards_trend",
 
 # --- Screens ----------------------------------------------------------------
 
+def is_foreign(q):
+    """ADR / foreign-domiciled listing, by reporting currency then by name."""
+    currency = (q.get("financialCurrency") or "").strip().upper()
+    if currency and currency != "USD":
+        return True
+    name = f"{q.get('shortName') or ''} {q.get('longName') or ''}".upper()
+    return "AMERICAN DEPOSITARY" in name or " ADR" in name or name.endswith("ADR")
+
+
 def screen_stocks(yf, floor):
     from yfinance import EquityQuery
 
@@ -231,7 +247,7 @@ def screen_stocks(yf, floor):
             break
         offset += 250
 
-    out = []
+    out, foreign = [], 0
     for q in quotes:
         if not q.get("symbol"):
             continue
@@ -246,6 +262,9 @@ def screen_stocks(yf, floor):
             continue
         if price * vol < MIN_DOLLAR_VOLUME:
             continue
+        if EXCLUDE_FOREIGN and is_foreign(q):
+            foreign += 1
+            continue
         out.append({
             "kind": "stock",
             "symbol": q["symbol"],
@@ -258,6 +277,8 @@ def screen_stocks(yf, floor):
             "avg_volume": float(q.get("averageDailyVolume3Month")
                                 or q.get("averageDailyVolume10Day") or 0),
         })
+    if foreign:
+        log(f"  {foreign} ADR/foreign listings excluded")
     out.sort(key=lambda r: -r["pct"])
     return out
 
