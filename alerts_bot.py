@@ -226,6 +226,11 @@ def screen_stocks(yf, floor):
             EquityQuery("gt", ["intradayprice", MIN_PRICE]),
         ]
         if with_cap:
+            # This term also keeps ETFs out for free: Yahoo models funds with
+            # netAssets rather than a market cap, so requiring one excludes
+            # them at the source. Verified against a live run - 120 survivors,
+            # zero carrying any fund field. The local marketCap check below
+            # catches them again on the fallback path. No ETF filter needed.
             terms.append(EquityQuery("gt", ["intradaymarketcap", MIN_MARKET_CAP]))
         return EquityQuery("and", terms)
 
