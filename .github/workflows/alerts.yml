@@ -50,50 +50,6 @@ jobs:
           key: mm-state-${{ github.run_id }}
           restore-keys: mm-state-
 
-      - name: ETF field diagnostic
-        run: |
-          python - <<'PY'
-          import yfinance as yf
-          from yfinance import EquityQuery
-          MIN_GAIN, MIN_DV, MIN_CAP, MIN_PX, MIN_VOL = 3.0, 25_000_000, 100_000_000, 3.00, 100_000
-          q = EquityQuery("and", [
-              EquityQuery("gt", ["percentchange", MIN_GAIN]),
-              EquityQuery("eq", ["region", "us"]),
-              EquityQuery("gt", ["dayvolume", MIN_VOL]),
-              EquityQuery("gt", ["intradayprice", MIN_PX]),
-              EquityQuery("gt", ["intradaymarketcap", MIN_CAP]),
-          ])
-          resp = yf.screen(q, offset=0, size=250, sortField="percentchange", sortAsc=False)
-          quotes = (resp or {}).get("quotes", []) or []
-          FUND = ["netAssets","netExpenseRatio","ytdReturn",
-                  "trailingThreeMonthNavReturns","trailingThreeMonthReturns"]
-          survivors, funds = [], []
-          for x in quotes:
-              px = x.get("regularMarketPrice") or 0
-              vol = x.get("regularMarketVolume") or 0
-              if px < MIN_PX or vol < MIN_VOL: continue
-              if (x.get("marketCap") or 0) < MIN_CAP: continue
-              if px * vol < MIN_DV: continue
-              survivors.append(x)
-              present = [f for f in FUND if x.get(f) is not None]
-              name = (x.get("longName") or x.get("shortName") or "").upper()
-              if present or " ETF" in name or " ETN" in name or "FUND" in name:
-                  funds.append((x.get("symbol"), x.get("longName"), present,
-                                x.get("quoteType"), x.get("marketCap")))
-          print(f"survivors after full filters: {len(survivors)}")
-          print(f"fund-looking survivors: {len(funds)}")
-          for f in funds: print("  FUND?", f)
-          print()
-          print("has marketCap at all:", sum(1 for x in quotes if x.get("marketCap")), "/", len(quotes))
-          for sym in ("INFQ","ZIM","BILI","QNT","XE","TE","NUAI"):
-              m = [x for x in quotes if x.get("symbol") == sym]
-              if m:
-                  x = m[0]
-                  print(sym, "|", x.get("longName"), "| fc=", x.get("financialCurrency"),
-                        "| cap=", x.get("marketCap"), "| fundfields=",
-                        [f for f in FUND if x.get(f) is not None])
-          PY
-
       - name: Run screener
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
