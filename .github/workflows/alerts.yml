@@ -50,6 +50,29 @@ jobs:
           key: mm-state-${{ github.run_id }}
           restore-keys: mm-state-
 
+      - name: ADR field diagnostic
+        run: |
+          python - <<'PY'
+          import yfinance as yf
+          from yfinance import EquityQuery
+          q = EquityQuery("and", [
+              EquityQuery("gt", ["percentchange", 1.0]),
+              EquityQuery("eq", ["region", "us"]),
+              EquityQuery("gt", ["dayvolume", 100000]),
+              EquityQuery("gt", ["intradayprice", 3.0]),
+          ])
+          resp = yf.screen(q, offset=0, size=100, sortField="percentchange", sortAsc=False)
+          quotes = (resp or {}).get("quotes", []) or []
+          print("rows:", len(quotes))
+          keys = sorted({k for q_ in quotes for k in q_.keys()})
+          print("ALL KEYS:", keys)
+          print()
+          cands = ["symbol","shortName","longName","quoteType","typeDisp","exchange",
+                   "fullExchangeName","market","financialCurrency","currency","region"]
+          for q_ in quotes[:20]:
+              print({k: q_.get(k) for k in cands if k in q_})
+          PY
+
       - name: Run screener
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
