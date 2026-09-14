@@ -48,6 +48,15 @@ CRYPTO_MIN_24H_VOLUME = 10_000_000     # USD traded in 24h
 CRYPTO_MIN_MARKET_CAP = 50_000_000
 CRYPTO_TOP_N = 250                     # how many coins by market cap to watch
 
+# Ticker sanity. CoinGecko lists coins whose "symbol" is Chinese characters
+# (龙虾, 牛来 and friends). Robinhood tickers are plain ASCII, so these can
+# never be tradable - and worse, they used to slip through: the URL could not
+# be built, the check raised UnicodeEncodeError, and the fail-open rule for
+# network blips let them alert. The notification was unreadable anyway,
+# because non-ASCII is stripped from ntfy headers, so both title and link
+# came out as "--".
+TICKER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,14}$")
+
 # Velocity: what is moving RIGHT NOW, rather than what has already moved.
 # A coin up sharply in the last hour while its 24h number is still modest is
 # early in a run; the same hourly jump on top of +95% is the tail of one.
@@ -308,10 +317,13 @@ def screen_crypto():
         log("  crypto screener returned an unexpected payload")
         return []
 
-    out = []
+    out, odd = [], 0
     for c in coins:
         sym = (c.get("symbol") or "").upper()
         if not sym:
+            continue
+        if not TICKER_RE.match(sym):
+            odd += 1
             continue
         chg = c.get("price_change_percentage_24h_in_currency")
         if chg is None:
@@ -337,6 +349,8 @@ def screen_crypto():
             "dollars": float(vol),
             "hour_pct": hour,
         })
+    if odd:
+        log(f"  {odd} coins skipped for non-ticker symbols")
     out.sort(key=lambda r: -r["pct"])
     return out
 
@@ -372,9 +386,12 @@ def save_state(state):
 # --- Alerting ---------------------------------------------------------------
 
 def robinhood_url(row):
-    if row["kind"] == "crypto":
-        return f"https://robinhood.com/crypto/{row['symbol']}"
-    return f"https://robinhood.com/stocks/{row['symbol']}"
+    # quote() so a symbol with odd characters produces a valid request rather
+    # than raising deep inside http.client.
+    from urllib.parse import quote
+    sym = quote(str(row["symbol"]), safe="")
+    kind = "crypto" if row["kind"] == "crypto" else "stocks"
+    return f"https://robinhood.com/{kind}/{sym}"
 
 
 def robinhood_tradable(row, cache):
@@ -389,6 +406,14 @@ def robinhood_tradable(row, cache):
     key = f"{row['kind']}:{row['symbol']}"
     if key in cache:
         return cache[key]
+
+    # A symbol that is not a plain ticker cannot be a Robinhood listing. This
+    # fails CLOSED on purpose: it is a fact about the symbol, not a transient
+    # network problem, so the fail-open rule below must not apply to it.
+    if not TICKER_RE.match(str(row["symbol"])):
+        cache[key] = False
+        log(f"  skip {row['symbol']} - not a Robinhood-style ticker")
+        return False
 
     import urllib.request
     import urllib.error
