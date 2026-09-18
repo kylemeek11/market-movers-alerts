@@ -31,7 +31,7 @@ MIN_MARKET_CAP = 100_000_000
 MIN_PRICE = 3.00
 MIN_DAY_VOLUME = 100_000
 
-ALERT_LEVELS = [10.0, 15.0, 20.0, 30.0, 50.0]
+ALERT_LEVELS = [15.0, 20.0, 30.0, 50.0]
 
 # ADRs and other foreign-domiciled listings. Yahoo does not label these
 # directly, but it does report the currency the company keeps its books in:
