@@ -67,6 +67,23 @@ VELOCITY_COOLDOWN_SEC = 4 * 3600       # re-alert the same name at most this oft
 # Relative volume: unusual participation usually shows up before the big
 # price move does. Today's volume is projected to a full session and compared
 # against the 3-month average.
+# Rate of change - the "is this running right now?" signal. Every run stamps
+# the price of every screened name into the state file; a later run compares
+# against its own earlier stamp. That gives a true short-window rate without
+# any extra data source. Elapsed time is measured from the stamps rather than
+# assumed, because GitHub's scheduler drifts.
+#
+# Honest limit: Yahoo delays stock quotes ~15 minutes, so a 10-minute stock
+# rate is a real 10-minute move that finished ~15 minutes ago. CoinGecko
+# caches about a minute, so crypto rates are near-live.
+RATE_WINDOW_MIN = 10.0          # look back about this far
+RATE_WINDOW_MAX_MIN = 20.0      # but ignore a stamp older than this
+RATE_MIN_ELAPSED_MIN = 4.0      # and younger than this - too short is noise
+STOCK_RATE_PCT = 3.0            # stock: alert on this much gain inside the window
+CRYPTO_RATE_PCT = 5.0           # crypto: more volatile, so a higher bar
+RATE_COOLDOWN_SEC = 45 * 60     # re-alert the same name at most this often
+RATE_MARKS_KEPT = 5             # price stamps retained per symbol
+
 RELVOL_MIN = 3.0                       # projected volume vs normal
 RELVOL_MIN_GAIN = 3.0                  # and it has to actually be rising
 SESSION_OPEN_MIN = 9 * 60 + 30         # 9:30 ET
@@ -363,6 +380,7 @@ def load_state():
         state = json.loads(STATE_FILE.read_text())
         if state.get("date") == today:
             state.setdefault("tradable", {})
+            state.setdefault("marks", {})
             if state.get("gate") != GATE_VERSION:
                 log("  tradability cache came from an older gate - clearing")
                 state["tradable"] = {}
@@ -371,7 +389,7 @@ def load_state():
         log("  state is from a previous day - starting fresh")
     except (OSError, ValueError):
         log("  no previous state found")
-    return {"date": today, "fired": {}, "tradable": {},
+    return {"date": today, "fired": {}, "tradable": {}, "marks": {},
             "gate": GATE_VERSION}
 
 
@@ -469,6 +487,72 @@ def format_body(row):
     else:
         line3 = f"${row['dollars'] / 1e6:,.0f}M traded"
     return f"{row['name']}\n{line2}\n{line3}"
+
+
+def record_marks(rows, marks, now_ts):
+    """Stamp the current price of every screened name."""
+    for r in rows:
+        key = f"{r['kind']}:{r['symbol']}"
+        hist = marks.setdefault(key, [])
+        hist.append([now_ts, r["price"]])
+        # Drop anything too old to be useful, then cap the list.
+        cutoff = now_ts - RATE_WINDOW_MAX_MIN * 60
+        hist[:] = [m for m in hist if m[0] >= cutoff][-RATE_MARKS_KEPT:]
+
+
+def collect_rate(rows, marks, fired, now_ts, threshold):
+    """Names that gained the threshold inside the lookback window.
+
+    Compares against the oldest stamp still inside the window, so a delayed
+    run widens the window rather than breaking the comparison. The elapsed
+    minutes actually used are returned for the alert text.
+    """
+    out = []
+    for r in rows:
+        key = f"{r['kind']}:{r['symbol']}"
+        hist = marks.get(key) or []
+        best = None
+        for ts, px in hist:
+            elapsed_min = (now_ts - ts) / 60.0
+            if elapsed_min < RATE_MIN_ELAPSED_MIN or elapsed_min > RATE_WINDOW_MAX_MIN:
+                continue
+            if px and px > 0 and (best is None or ts < best[0]):
+                best = (ts, px, elapsed_min)
+        if best is None:
+            continue
+        _, old_px, elapsed_min = best
+        move = (r["price"] - old_px) / old_px * 100.0
+        if move < threshold:
+            continue
+        fkey = f"rate:{key}"
+        if now_ts - fired.get(fkey, 0) < RATE_COOLDOWN_SEC:
+            continue
+        out.append((fkey, r, move, elapsed_min))
+    out.sort(key=lambda t: -t[2])
+    return out
+
+
+def send_rate(pending, fired, now_ts, overnight, high_bar):
+    held = 0
+    for fkey, r, move, elapsed_min in pending[:MAX_ALERTS_PER_RUN]:
+        # Overnight this is an early signal on a small move - hold it, and do
+        # not record it, so it can fire again in daylight if still running.
+        if overnight and move < high_bar:
+            held += 1
+            continue
+        fired[fkey] = now_ts
+        price_line = (f"  -  ${r['price']:,.2f}" if r["price"] >= 1 else "")
+        push(f"{r['symbol']} +{move:.1f}% in {elapsed_min:.0f} min",
+             f"{r['name']}\n"
+             f"+{move:.1f}% in {elapsed_min:.0f} min\n"
+             f"now +{r['pct']:.1f}% on the day{price_line}",
+             priority="max" if overnight else "high",
+             tags="zap",
+             click=robinhood_url(r))
+        log(f"  RATE {r['symbol']} +{move:.1f}% over {elapsed_min:.0f}min "
+            f"(day {r['pct']:+.1f}%)")
+    if held:
+        log(f"  {held} rate signals held until morning")
 
 
 def collect_velocity(rows, fired, now_ts):
@@ -602,10 +686,21 @@ def main():
     state = load_state()
     fired = state["fired"]
     tradable = state["tradable"]
+    marks = state["marks"]
 
     # --- Crypto: always, it never closes ---
     crypto_rows = screen_crypto()
     log(f"{len(crypto_rows)} coins pass the crypto filters")
+    record_marks(crypto_rows, marks, now_ts)
+
+    # Rate of change first: it is the earliest signal, so it wins the run cap.
+    crate = filter_tradable(
+        collect_rate(crypto_rows, marks, fired, now_ts, CRYPTO_RATE_PCT),
+        tradable, 1)
+    if crate:
+        log(f"{len(crate)} coins moving fast in the last "
+            f"{RATE_WINDOW_MIN:.0f} min")
+    send_rate(crate, fired, now_ts, overnight, CRYPTO_HIGH_PRIORITY_LEVEL)
 
     # Velocity first: this is the early signal, so it goes out ahead of the
     # magnitude alerts if the run cap forces a choice.
@@ -637,6 +732,15 @@ def main():
         with_avg = sum(1 for r in stock_rows if (r.get("avg_volume") or 0) > 0)
         log(f"{len(stock_rows)} stocks pass the screen "
             f"({with_avg} with average-volume data)")
+
+        record_marks(stock_rows, marks, now_ts)
+        srate = filter_tradable(
+            collect_rate(stock_rows, marks, fired, now_ts, STOCK_RATE_PCT),
+            tradable, 1)
+        if srate:
+            log(f"{len(srate)} stocks moving fast in the last "
+                f"{RATE_WINDOW_MIN:.0f} min")
+        send_rate(srate, fired, now_ts, overnight, HIGH_PRIORITY_LEVEL)
 
         fraction = session_fraction()
         if fraction is None:
