@@ -761,6 +761,11 @@ def main():
     else:
         log("Outside market hours - skipping the stock screen")
 
+    # Makes a silent failure loud: if the state cache ever stopped carrying
+    # marks across runs, this would read 0 and no rate alert could ever fire.
+    with_prior = sum(1 for h in marks.values() if len(h) >= 2)
+    log(f"tracking {len(marks)} names, {with_prior} with a prior price stamp")
+
     save_state(state)
     return 0
 
