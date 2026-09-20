@@ -805,8 +805,10 @@ def main():
             f"market-wide, holding rate alerts")
         craw = []
     crate = filter_tradable(craw, tradable, 1)
-    if crate:
-        log(f"{len(crate)} coins climbing fast enough to flag")
+    if craw:
+        dropped = len(craw) - len(crate)
+        log(f"{len(crate)} coins climbing fast enough to flag"
+            + (f" ({dropped} dropped - not on Robinhood)" if dropped else ""))
     send_rate(crate, fired, now_ts, overnight, CRYPTO_HIGH_PRIORITY_LEVEL)
     log(rate_bars(crypto_rows, marks, now_ts))
 
@@ -849,8 +851,10 @@ def main():
                 f"market-wide, holding rate alerts")
             sraw = []
         srate = filter_tradable(sraw, tradable, 1)
-        if srate:
-            log(f"{len(srate)} stocks climbing fast enough to flag")
+        if sraw:
+            dropped = len(sraw) - len(srate)
+            log(f"{len(srate)} stocks climbing fast enough to flag"
+                + (f" ({dropped} dropped - not on Robinhood)" if dropped else ""))
         send_rate(srate, fired, now_ts, overnight, HIGH_PRIORITY_LEVEL)
         log(rate_bars(stock_rows, marks, now_ts))
 
