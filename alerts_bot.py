@@ -66,54 +66,61 @@ STABLE_SKIP = {
 # came out as "--".
 TICKER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,14}$")
 
-# Velocity: what is moving RIGHT NOW, rather than what has already moved.
-# A coin up sharply in the last hour while its 24h number is still modest is
-# early in a run; the same hourly jump on top of +95% is the tail of one.
-CRYPTO_VELOCITY_1H = 6.0               # up this much in the last hour
-CRYPTO_VELOCITY_MAX_24H = 25.0         # but not already run further than this
-VELOCITY_COOLDOWN_SEC = 4 * 3600       # re-alert the same name at most this often
+# Relative volume: unusual participation. Kept for stocks only, and with a
+# caveat - on crypto, requiring a volume surge alongside the price move made
+# the alert 85 minutes LATER for six points of precision. Confirmation costs
+# timeliness, which is the whole thing we are buying here.
 
-# Relative volume: unusual participation usually shows up before the big
-# price move does. Today's volume is projected to a full session and compared
-# against the 3-month average.
-# Rate of change - the "is this running right now?" signal. Every run stamps
-# the price of every name in the TRACKED UNIVERSE, which is deliberately much
-# wider than the set allowed to alert: a coin sitting flat when its run begins
-# has to already be stamped, or there is nothing to measure the run against.
-# A later run compares against its own earlier stamp, which gives a true
-# short-window rate with no extra data source, and elapsed time is read off
-# the stamps rather than assumed, because GitHub's scheduler drifts.
+# Rate of change - the signal. Every run stamps the price of every name in the
+# TRACKED UNIVERSE, which is deliberately much wider than the set allowed to
+# alert: a coin sitting flat when its run begins has to already be stamped, or
+# there is nothing to measure the run against. A later run compares against
+# its own earlier stamp, and elapsed time is read off the stamps rather than
+# assumed, because GitHub's scheduler drifts.
 #
-# Two windows, because runs come in two shapes. A spike is obvious inside 20
-# minutes. A steady climb is not: NEAR ran 3.63 -> 4.20 over 100 minutes on
-# 2026-09-20 without ever posting 5% inside any 20-minute window, so no fast
-# threshold could have caught it - yet it was up 6.7% over 40 minutes a full
-# 20 minutes before the 15% day alert landed. Watching only the short window
-# misses exactly the runs that last long enough to still be worth acting on.
+# The window and the bar are measured, not guessed. Backtest over 81
+# Robinhood-tradable coins, 5-minute candles, 2026-09-13 to 09-20: 151 runs of
+# +8% or more, median run +10.9% lasting about twelve hours. Runs are SLOW.
+# Measured from the bottom of each one, a run is up 2% about 75 minutes in
+# with 8.3% still to come, up 3% at 130 minutes with 7.1% to come, up 5% at
+# 255 minutes with 5.2% to come. You are not late at 2%.
 #
-# Honest limit: Yahoo delays stock quotes ~15 minutes, so a 10-minute stock
-# rate is a real 10-minute move that finished ~15 minutes ago. CoinGecko
-# caches about a minute, so crypto rates are near-live.
-RATE_FAST_MIN = 4.0             # spike: ignore a stamp younger than this
-RATE_FAST_MAX_MIN = 20.0        # ...or older than this
-RATE_SLOW_MIN = 20.0            # climb: the sustained window starts here
-RATE_SLOW_MAX_MIN = 45.0        # ...and ends here
-STOCK_RATE_PCT = 3.0            # stock spike: gain needed in the fast window
-CRYPTO_RATE_PCT = 5.0           # crypto spike: more volatile, so a higher bar
-STOCK_SLOW_RATE_PCT = 4.0       # stock climb: gain needed across the slow window
-CRYPTO_SLOW_RATE_PCT = 6.0      # crypto climb: catches NEAR at 3.97, not 4.23
+# What did NOT work, tested and discarded:
+#   - Short windows. Every rule on a 10-20 minute lookback at 4% or more had
+#     no follow-through at all. A sharp spike is the END of a move.
+#   - Volume confirmation and breakout filters. Both bought a few points of
+#     precision at the cost of 85-190 minutes of lateness.
+# A 50-75 minute lookback at a low bar beat everything else tried.
+#
+# At 2% this catches 89% of runs, fires about 80 times a day across the
+# universe, lands a median 3.25 hours into a 12-hour run with 6.6% still to
+# come, and about half of all alerts land inside a real +8% run against a
+# 1.7% base rate. Raise CRYPTO_RATE_PCT to 2.5 for ~51/day and 77% of runs,
+# or 3.0 for ~33/day and 68%. See SETUP.md for the full table.
+#
+# Honest limit: Yahoo delays stock quotes ~15 minutes, so a stock rate is a
+# real move that finished ~15 minutes ago. CoinGecko caches about a minute,
+# so crypto rates are near-live. The stock bar is NOT backed by the backtest
+# above, which was crypto only.
+RATE_WINDOW_MIN = 50.0          # ignore a stamp younger than this
+RATE_WINDOW_MAX_MIN = 75.0      # ...or older than this
+CRYPTO_RATE_PCT = 2.0           # crypto: gain across that window worth a look
+STOCK_RATE_PCT = 2.0            # stocks: unmeasured, carried over by analogy
 RATE_COOLDOWN_SEC = 45 * 60     # re-alert the same name at most this often
-RATE_MARKS_KEPT = 16            # enough stamps to span the slow window
+RATE_MARKS_KEPT = 24            # enough stamps to span the window with drift
 
-# Crypto is highly correlated. When the whole market lifts at once, every coin
-# clears the rate bars and the run cap just picks six at random - noise with a
-# high-priority buzz attached. Above this share of the tracked universe the
-# move is beta, not a run, so the rate tracks stand down for that run. The day
-# thresholds still fire, so nothing genuinely big goes unreported.
-RATE_BREADTH_MAX = 0.30
+# Crypto is highly correlated, so a market-wide lift can light up the whole
+# board at once. Measured over the backtest week, the share of the universe
+# clearing the 2% bar in one cycle is 3% at the median and 9% at the 90th
+# percentile, so this only trips in a genuine melt-up (0.4% of cycles). Below
+# it the per-run cap does the work instead, sending the biggest movers rather
+# than nothing - a broad rally is still rideable. The day thresholds fire
+# either way, so nothing genuinely big goes unreported.
+RATE_BREADTH_MAX = 0.50
 
 RELVOL_MIN = 3.0                       # projected volume vs normal
 RELVOL_MIN_GAIN = 3.0                  # and it has to actually be rising
+RELVOL_COOLDOWN_SEC = 4 * 3600         # re-alert the same name at most this often
 
 # The stock screen is the tracking universe, so its floor has to sit below
 # every alert floor - same reason as the crypto split above. A stock only up
@@ -132,6 +139,15 @@ SESSION_MINUTES = 390                  # 6.5h regular session
 # is cached for the day, so this stays a handful of requests.
 CHECK_ROBINHOOD = True
 ROBINHOOD_TIMEOUT = 12
+
+# Robinhood publishes the list itself. This is strictly better than inferring
+# tradability one page at a time: one request instead of dozens, it answers
+# the question directly, and because the universe can be filtered up front, a
+# coin that is not on Robinhood never gets stamped, never climbs the rate
+# track, and never vanishes silently between the signal and the push. Crypto
+# only - stocks still use the per-symbol page check below.
+ROBINHOOD_PAIRS_URL = "https://nummus.robinhood.com/currency_pairs/"
+ROBINHOOD_MIN_PAIRS = 20         # fewer than this means the payload is wrong
 ROBINHOOD_SCAN_BYTES = 600_000   # the field sits ~200KB in; no need for the rest
 TRADABILITY_RE = re.compile(rb'"tradability"\s*:\s*"([a-z_]+)"', re.I)
 # Bump when the tradability logic changes, so answers cached by an older and
@@ -139,7 +155,10 @@ TRADABILITY_RE = re.compile(rb'"tradability"\s*:\s*"([a-z_]+)"', re.I)
 GATE_VERSION = 2
 
 # --- Shared -----------------------------------------------------------------
-MAX_ALERTS_PER_RUN = 6
+# At the 2% bar a cycle sends 2.5 alerts on average and 6 at the 90th
+# percentile, so a cap of 6 would clip 7% of cycles; 10 clips 3%. Anything
+# over the cap is not lost, it just waits for the next run.
+MAX_ALERTS_PER_RUN = 10
 HIGH_PRIORITY_LEVEL = 20.0             # stocks at/above this break through silence
 CRYPTO_HIGH_PRIORITY_LEVEL = 40.0      # crypto has to move harder to do the same
 
@@ -347,8 +366,42 @@ def screen_stocks(yf, floor):
     return out
 
 
-def screen_crypto():
-    """Top coins by market cap, filtered to real movers on real volume."""
+def robinhood_symbols():
+    """Every coin Robinhood will actually let you trade, or None.
+
+    None means "could not find out", and the caller falls back to the
+    per-symbol page check rather than silently narrowing the universe to
+    nothing - the failure mode that would quietly stop all crypto alerts.
+    """
+    import urllib.request
+
+    req = urllib.request.Request(
+        ROBINHOOD_PAIRS_URL,
+        headers={"Accept": "application/json",
+                 "User-Agent": "market-movers-alerts/1.0"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=ROBINHOOD_TIMEOUT) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:
+        log(f"  Robinhood pair list unavailable ({exc}) - using page checks")
+        return None
+
+    out = set()
+    for pair in (data.get("results") or []):
+        if pair.get("tradability") != "tradable":
+            continue
+        code = ((pair.get("asset_currency") or {}).get("code") or "").upper()
+        if code:
+            out.add(code)
+    if len(out) < ROBINHOOD_MIN_PAIRS:
+        log(f"  Robinhood pair list looked wrong ({len(out)}) - using page checks")
+        return None
+    return out
+
+
+def screen_crypto(allowed=None):
+    """Top coins by market cap, filtered to what is liquid and buyable."""
     import urllib.request
 
     req = urllib.request.Request(
@@ -367,7 +420,7 @@ def screen_crypto():
         log("  crypto screener returned an unexpected payload")
         return []
 
-    out, odd = [], 0
+    out, odd, off = [], 0, 0
     for c in coins:
         sym = (c.get("symbol") or "").upper()
         if not sym:
@@ -387,19 +440,20 @@ def screen_crypto():
             continue
         if sym in STABLE_SKIP:
             continue
+        if allowed is not None and sym not in allowed:
+            off += 1
+            continue
         hour = c.get("price_change_percentage_1h_in_currency")
         # Everything liquid is TRACKED; only some of it is a CANDIDATE for the
-        # day-threshold and velocity alerts. Splitting these is the whole fix:
+        # day-threshold alerts. Splitting these is the whole fix:
         # the old code dropped a coin right here unless it had already moved,
         # so the rate tracks never held a stamp from before a run started and
         # could only ever confirm what the day thresholds were about to say.
         #
-        # Note CoinGecko's 1h field is not a trailing 60 minutes - on
-        # 2026-09-20 it read +5.3% for NEAR when the real 1h move was +13.5%.
-        # It is fine as one way into the candidate set, but nothing early
-        # should depend on it; that is what our own stamps are for.
-        big_enough = float(chg) >= min(CRYPTO_ALERT_LEVELS)
-        moving_now = hour is not None and float(hour) >= CRYPTO_VELOCITY_1H
+        # CoinGecko's 1h field is NOT a trailing 60 minutes - on 2026-09-20 it
+        # read +5.3% for NEAR when the real 1h move was +13.5%. The signal
+        # that used to depend on it is gone; our own stamps answer the same
+        # question correctly. It is carried here only for the log.
         out.append({
             "kind": "crypto",
             "symbol": sym,
@@ -408,10 +462,12 @@ def screen_crypto():
             "price": float(price),
             "dollars": float(vol),
             "hour_pct": hour,
-            "candidate": bool(big_enough or moving_now),
+            "candidate": float(chg) >= min(CRYPTO_ALERT_LEVELS),
         })
     if odd:
         log(f"  {odd} coins skipped for non-ticker symbols")
+    if off:
+        log(f"  {off} liquid coins skipped - not tradable on Robinhood")
     out.sort(key=lambda r: -r["pct"])
     return out
 
@@ -425,6 +481,7 @@ def load_state():
         if state.get("date") == today:
             state.setdefault("tradable", {})
             state.setdefault("marks", {})
+            state.setdefault("rh_symbols", None)
             if state.get("gate") != GATE_VERSION:
                 log("  tradability cache came from an older gate - clearing")
                 state["tradable"] = {}
@@ -434,7 +491,7 @@ def load_state():
     except (OSError, ValueError):
         log("  no previous state found")
     return {"date": today, "fired": {}, "tradable": {}, "marks": {},
-            "gate": GATE_VERSION}
+            "rh_symbols": None, "gate": GATE_VERSION}
 
 
 def save_state(state):
@@ -522,10 +579,9 @@ def filter_tradable(items, cache, row_index):
 def format_body(row):
     price = row["price"]
     price_str = f"${price:,.2f}" if price >= 1 else f"${price:,.6f}".rstrip("0")
-    parts = [f"now +{row['pct']:.1f}%", price_str]
-    if row["hour_pct"] is not None:
-        parts.append(f"1h {row['hour_pct']:+.1f}%")
-    line2 = "  -  ".join(parts)
+    # Deliberately no 1h figure: the only source for it disagrees with the
+    # actual hourly move by enough to mislead (see screen_crypto).
+    line2 = "  -  ".join([f"now +{row['pct']:.1f}%", price_str])
     if row["kind"] == "crypto":
         line3 = f"${row['dollars'] / 1e6:,.0f}M 24h volume"
     else:
@@ -540,13 +596,13 @@ def record_marks(rows, marks, now_ts):
         hist = marks.setdefault(key, [])
         hist.append([now_ts, r["price"]])
         # Drop anything too old to be useful, then cap the list.
-        cutoff = now_ts - RATE_SLOW_MAX_MIN * 60
+        cutoff = now_ts - RATE_WINDOW_MAX_MIN * 60
         hist[:] = [m for m in hist if m[0] >= cutoff][-RATE_MARKS_KEPT:]
 
 
 def drop_stale_marks(marks, now_ts):
     """Forget names that have left the universe, so the state stops growing."""
-    cutoff = now_ts - RATE_SLOW_MAX_MIN * 60
+    cutoff = now_ts - RATE_WINDOW_MAX_MIN * 60
     for key in [k for k, h in marks.items() if not h or h[-1][0] < cutoff]:
         del marks[key]
 
@@ -567,33 +623,28 @@ def move_since(price, mark):
     return (price - mark[1]) / mark[1] * 100.0
 
 
-def collect_rate(rows, marks, fired, now_ts, fast_pct, slow_pct):
-    """Names climbing fast enough to be worth a look, on either track.
+def collect_rate(rows, marks, fired, now_ts, pct):
+    """Names climbing steadily enough to be worth a look.
 
-    Each track compares against the OLDEST stamp still inside its window, so
-    a delayed run widens the window rather than breaking the comparison, and
-    the elapsed minutes actually used are carried through to the alert text.
-    The fast track is checked first: when both fire, the spike is the more
-    urgent description of what is happening.
+    Compares against the OLDEST stamp still inside the window, so a delayed
+    run widens the comparison rather than breaking it, and the elapsed
+    minutes actually used are carried through to the alert text. Sorted by
+    size of move, because that is the order the per-run cap should keep.
     """
     out = []
     for r in rows:
         key = f"{r['kind']}:{r['symbol']}"
         hist = marks.get(key) or []
-        hit = None
-        fast = oldest_mark(hist, now_ts, RATE_FAST_MIN, RATE_FAST_MAX_MIN)
-        if fast and move_since(r["price"], fast) >= fast_pct:
-            hit = fast
-        if hit is None:
-            slow = oldest_mark(hist, now_ts, RATE_SLOW_MIN, RATE_SLOW_MAX_MIN)
-            if slow and move_since(r["price"], slow) >= slow_pct:
-                hit = slow
-        if hit is None:
+        mark = oldest_mark(hist, now_ts, RATE_WINDOW_MIN, RATE_WINDOW_MAX_MIN)
+        if mark is None:
+            continue
+        move = move_since(r["price"], mark)
+        if move < pct:
             continue
         fkey = f"rate:{key}"
         if now_ts - fired.get(fkey, 0) < RATE_COOLDOWN_SEC:
             continue
-        out.append((fkey, r, move_since(r["price"], hit), hit[2]))
+        out.append((fkey, r, move, mark[2]))
     out.sort(key=lambda t: -t[2])
     return out
 
@@ -605,26 +656,21 @@ def rate_bars(rows, marks, now_ts):
     market this minute, not a count of alerts that would have gone out. The
     only honest way to move the bars is to watch these for a few days.
     """
-    fast_bars, slow_bars = (2.0, 3.0, 5.0), (3.0, 4.0, 6.0, 8.0)
-    fast, slow = [0] * len(fast_bars), [0] * len(slow_bars)
+    bars = (1.5, 2.0, 2.5, 3.0, 4.0, 6.0)
+    counts = [0] * len(bars)
+    ready = 0
     for r in rows:
         hist = marks.get(f"{r['kind']}:{r['symbol']}") or []
-        f = oldest_mark(hist, now_ts, RATE_FAST_MIN, RATE_FAST_MAX_MIN)
-        if f:
-            mv = move_since(r["price"], f)
-            for i, bar in enumerate(fast_bars):
-                if mv >= bar:
-                    fast[i] += 1
-        s = oldest_mark(hist, now_ts, RATE_SLOW_MIN, RATE_SLOW_MAX_MIN)
-        if s:
-            mv = move_since(r["price"], s)
-            for i, bar in enumerate(slow_bars):
-                if mv >= bar:
-                    slow[i] += 1
-    return ("  rate bars  spike "
-            + "/".join(f"{b:g}%:{n}" for b, n in zip(fast_bars, fast))
-            + "   climb "
-            + "/".join(f"{b:g}%:{n}" for b, n in zip(slow_bars, slow)))
+        mark = oldest_mark(hist, now_ts, RATE_WINDOW_MIN, RATE_WINDOW_MAX_MIN)
+        if mark is None:
+            continue
+        ready += 1
+        mv = move_since(r["price"], mark)
+        for i, bar in enumerate(bars):
+            if mv >= bar:
+                counts[i] += 1
+    return ("  rate bars (" + str(ready) + " with history)  "
+            + "/".join(f"{b:g}%:{n}" for b, n in zip(bars, counts)))
 
 
 def too_broad(pending, rows):
@@ -657,23 +703,6 @@ def send_rate(pending, fired, now_ts, overnight, high_bar):
         log(f"  {held} rate signals held until morning")
 
 
-def collect_velocity(rows, fired, now_ts):
-    """Coins moving hard this hour that have not already run away."""
-    out = []
-    for r in rows:
-        hour = r.get("hour_pct")
-        if hour is None or float(hour) < CRYPTO_VELOCITY_1H:
-            continue
-        if r["pct"] > CRYPTO_VELOCITY_MAX_24H:
-            continue          # the move already happened; this is the tail
-        key = f"cryptovel:{r['symbol']}"
-        if now_ts - fired.get(key, 0) < VELOCITY_COOLDOWN_SEC:
-            continue
-        out.append((key, r))
-    out.sort(key=lambda t: -float(t[1]["hour_pct"]))
-    return out
-
-
 def collect_relvol(rows, fired, now_ts, fraction):
     """Stocks trading far above their normal pace, and rising."""
     out = []
@@ -686,29 +715,11 @@ def collect_relvol(rows, fired, now_ts, fraction):
         if ratio < RELVOL_MIN:
             continue
         key = f"relvol:{r['symbol']}"
-        if now_ts - fired.get(key, 0) < VELOCITY_COOLDOWN_SEC:
+        if now_ts - fired.get(key, 0) < RELVOL_COOLDOWN_SEC:
             continue
         out.append((key, r, ratio))
     out.sort(key=lambda t: -t[2])
     return out
-
-
-def send_velocity(pending, fired, now_ts, overnight):
-    if overnight:
-        # An early signal is by definition a small move so far - never worth
-        # a 3am wake-up, and not recorded, so it can fire again in daylight.
-        if pending:
-            log(f"  {len(pending)} velocity signals held until morning")
-        return
-    for key, r in pending[:MAX_ALERTS_PER_RUN]:
-        fired[key] = now_ts
-        push(f"{r['symbol']} running {float(r['hour_pct']):+.1f}%/hr",
-             format_body(r),
-             priority="high",
-             tags="rocket",
-             click=robinhood_url(r))
-        log(f"  VELOCITY {r['symbol']} 1h {float(r['hour_pct']):+.1f}% "
-            f"(24h {r['pct']:+.1f}%)")
 
 
 def send_relvol(pending, fired, now_ts, overnight):
@@ -791,15 +802,21 @@ def main():
     marks = state["marks"]
 
     # --- Crypto: always, it never closes ---
-    crypto_rows = screen_crypto()
+    allowed = state.get("rh_symbols")
+    if allowed is None:
+        found = robinhood_symbols()
+        if found is not None:
+            allowed = sorted(found)
+            state["rh_symbols"] = allowed
+            log(f"  Robinhood lists {len(allowed)} tradable coins")
+    crypto_rows = screen_crypto(set(allowed) if allowed else None)
     crypto_movers = [r for r in crypto_rows if r.get("candidate")]
     log(f"tracking {len(crypto_rows)} liquid coins, "
         f"{len(crypto_movers)} in alert range")
     record_marks(crypto_rows, marks, now_ts)
 
     # Rate of change first: it is the earliest signal, so it wins the run cap.
-    craw = collect_rate(crypto_rows, marks, fired, now_ts,
-                        CRYPTO_RATE_PCT, CRYPTO_SLOW_RATE_PCT)
+    craw = collect_rate(crypto_rows, marks, fired, now_ts, CRYPTO_RATE_PCT)
     if too_broad(craw, crypto_rows):
         log(f"  {len(craw)} of {len(crypto_rows)} coins climbing - "
             f"market-wide, holding rate alerts")
@@ -811,14 +828,6 @@ def main():
             + (f" ({dropped} dropped - not on Robinhood)" if dropped else ""))
     send_rate(crate, fired, now_ts, overnight, CRYPTO_HIGH_PRIORITY_LEVEL)
     log(rate_bars(crypto_rows, marks, now_ts))
-
-    # Velocity next: also an early signal, so it goes out ahead of the
-    # magnitude alerts if the run cap forces a choice.
-    vel = filter_tradable(collect_velocity(crypto_movers, fired, now_ts),
-                          tradable, 1)
-    log(f"{len(vel)} tradable coins moving hard this hour"
-        f"{' (overnight)' if overnight else ''}")
-    send_velocity(vel, fired, now_ts, overnight)
 
     crypto_pending = filter_tradable(
         collect_pending(crypto_movers, CRYPTO_ALERT_LEVELS, fired, "crypto"),
@@ -844,8 +853,7 @@ def main():
             f"({with_avg} with average-volume data)")
 
         record_marks(stock_rows, marks, now_ts)
-        sraw = collect_rate(stock_rows, marks, fired, now_ts,
-                            STOCK_RATE_PCT, STOCK_SLOW_RATE_PCT)
+        sraw = collect_rate(stock_rows, marks, fired, now_ts, STOCK_RATE_PCT)
         if too_broad(sraw, stock_rows):
             log(f"  {len(sraw)} of {len(stock_rows)} stocks climbing - "
                 f"market-wide, holding rate alerts")
@@ -884,10 +892,10 @@ def main():
     drop_stale_marks(marks, now_ts)
     with_prior = sum(1 for h in marks.values() if len(h) >= 2)
     slow_ready = sum(1 for h in marks.values()
-                     if oldest_mark(h, now_ts, RATE_SLOW_MIN,
-                                    RATE_SLOW_MAX_MIN) is not None)
+                     if oldest_mark(h, now_ts, RATE_WINDOW_MIN,
+                                    RATE_WINDOW_MAX_MIN) is not None)
     log(f"tracking {len(marks)} names, {with_prior} with a prior stamp, "
-        f"{slow_ready} with {RATE_SLOW_MIN:.0f}min+ of history")
+        f"{slow_ready} with {RATE_WINDOW_MIN:.0f}min+ of history")
 
     save_state(state)
     return 0
