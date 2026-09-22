@@ -113,8 +113,29 @@ TICKER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,14}$")
 # above, which was crypto only.
 RATE_WINDOW_MIN = 50.0          # ignore a stamp younger than this
 RATE_WINDOW_MAX_MIN = 75.0      # ...or older than this
-CRYPTO_RATE_PCT = 5.0           # crypto: gain across that window worth a look
-STOCK_RATE_PCT = 5.0            # stocks: same bar; see the note below
+CRYPTO_RATE_PCT = 3.0           # crypto: gain across that window worth a look
+STOCK_RATE_PCT = 3.0            # stocks: same bar
+
+# Volume confirmation. Scored against 164 of Kyle's own alerts from
+# 2026-09-22 (5-minute bars pulled for each symbol, outcome measured over the
+# 4 hours after each buzz), relative volume separates the runs from the
+# dead ends about as well as anything tested:
+#
+#   relvol at alert   goes +3% after   dead end (<1%)
+#   under 2x               16%              48%
+#   2-3x                   22%              37%
+#   3-5x                   35%              41%
+#   5-10x                  31%              23%
+#
+# Paired with a 3% bar that lands at ~37 alerts/day with a 33% hit rate and
+# 27% dead ends - versus the 5%-alone setting it replaces, which was ~39/day
+# at 25% and 31%. Same notification count, better hits, and it fires at 3%
+# rather than 5% so the entry is earlier.
+#
+# An earlier week-long crypto backtest said volume confirmation was not worth
+# it. That test asked whether an alert sat inside a run; this one asks whether
+# the price actually went up afterwards, which is the question that matters.
+RATE_MIN_RELVOL = 5.0           # window volume vs the name's own normal pace
 RATE_COOLDOWN_SEC = 45 * 60     # re-alert the same name at most this often
 RATE_MARKS_KEPT = 24            # enough stamps to span the window with drift
 
@@ -598,12 +619,24 @@ def format_body(row):
     return f"{row['name']}\n{line2}\n{line3}"
 
 
+def volume_counter(row):
+    """The running volume figure this row carries, or None.
+
+    Neither source gives volume for an arbitrary recent window, so we stamp a
+    counter and difference it. Crypto gets CoinGecko's rolling 24h dollar
+    volume; stocks get today's cumulative share volume from the screener.
+    """
+    if row["kind"] == "crypto":
+        return row.get("dollars")
+    return row.get("volume")
+
+
 def record_marks(rows, marks, now_ts):
-    """Stamp the current price of every name in the tracked universe."""
+    """Stamp price and a volume counter for every name in the universe."""
     for r in rows:
         key = f"{r['kind']}:{r['symbol']}"
         hist = marks.setdefault(key, [])
-        hist.append([now_ts, r["price"]])
+        hist.append([now_ts, r["price"], volume_counter(r)])
         # Drop anything too old to be useful, then cap the list.
         cutoff = now_ts - RATE_WINDOW_MAX_MIN * 60
         hist[:] = [m for m in hist if m[0] >= cutoff][-RATE_MARKS_KEPT:]
@@ -617,14 +650,21 @@ def drop_stale_marks(marks, now_ts):
 
 
 def oldest_mark(hist, now_ts, lo_min, hi_min):
-    """The oldest stamp whose age falls inside [lo_min, hi_min]."""
+    """The oldest stamp whose age falls inside [lo_min, hi_min].
+
+    Stamps written before volume tracking have two fields instead of three,
+    so read by index rather than unpacking - otherwise every name goes dark
+    for a window's length after a deploy.
+    """
     best = None
-    for ts, px in hist:
+    for m in hist:
+        ts, px = m[0], m[1]
+        vol = m[2] if len(m) > 2 else None
         elapsed_min = (now_ts - ts) / 60.0
         if elapsed_min < lo_min or elapsed_min > hi_min:
             continue
         if px and px > 0 and (best is None or ts < best[0]):
-            best = (ts, px, elapsed_min)
+            best = (ts, px, elapsed_min, vol)
     return best
 
 
@@ -632,15 +672,58 @@ def move_since(price, mark):
     return (price - mark[1]) / mark[1] * 100.0
 
 
+def relative_volume(row, mark):
+    """How busy the last ~hour was, against this name's own normal pace.
+
+    Returns None when it cannot be worked out, which the caller treats as a
+    reason not to alert - but logs, so a data problem never silently mutes
+    everything.
+
+    Crypto: the counter is a ROLLING 24h total, so its change over a window
+    is (traded in the window) minus (what dropped off the back). The latter
+    is a normal window's worth, so traded ~= delta + V24*w/1440 and the ratio
+    against normal reduces to 1 + (delta/V24)*(1440/w).
+
+    Stocks: the counter is today's cumulative volume, so the delta IS the
+    window's volume. Normal is the 3-month daily average pro-rated to the
+    window. A negative delta means the window crossed a session boundary and
+    the counter reset; there is nothing to measure, so return None.
+    """
+    prior = mark[3] if len(mark) > 3 else None
+    now_vol = volume_counter(row)
+    minutes = mark[2]
+    if prior is None or now_vol is None or minutes <= 0:
+        return None
+    delta = now_vol - prior
+
+    if row["kind"] == "crypto":
+        if prior <= 0:
+            return None
+        return 1.0 + (delta / prior) * (1440.0 / minutes)
+
+    avg = row.get("avg_volume") or 0
+    if avg <= 0 or delta < 0:
+        return None
+    normal = avg * (minutes / SESSION_MINUTES)
+    if normal <= 0:
+        return None
+    return delta / normal
+
+
 def collect_rate(rows, marks, fired, now_ts, pct):
-    """Names climbing steadily enough to be worth a look.
+    """Names climbing steadily, on volume, enough to be worth a look.
 
     Compares against the OLDEST stamp still inside the window, so a delayed
     run widens the comparison rather than breaking it, and the elapsed
     minutes actually used are carried through to the alert text. Sorted by
     size of move, because that is the order the per-run cap should keep.
+
+    Returns (alerts, quiet, unknown): names that cleared both bars, names
+    that climbed but on ordinary volume, and names whose volume could not be
+    worked out. The last two are counted in the log so that a data problem
+    shows up as a number rather than as silence.
     """
-    out = []
+    out, quiet, unknown = [], 0, 0
     for r in rows:
         key = f"{r['kind']}:{r['symbol']}"
         hist = marks.get(key) or []
@@ -650,12 +733,19 @@ def collect_rate(rows, marks, fired, now_ts, pct):
         move = move_since(r["price"], mark)
         if move < pct:
             continue
+        rv = relative_volume(r, mark)
+        if rv is None:
+            unknown += 1
+            continue
+        if rv < RATE_MIN_RELVOL:
+            quiet += 1
+            continue
         fkey = f"rate:{key}"
         if now_ts - fired.get(fkey, 0) < RATE_COOLDOWN_SEC:
             continue
-        out.append((fkey, r, move, mark[2]))
+        out.append((fkey, r, move, mark[2], rv))
     out.sort(key=lambda t: -t[2])
-    return out
+    return out, quiet, unknown
 
 
 def rate_bars(rows, marks, now_ts):
@@ -666,8 +756,10 @@ def rate_bars(rows, marks, now_ts):
     only honest way to move the bars is to watch these for a few days.
     """
     bars = (1.5, 2.0, 2.5, 3.0, 4.0, 6.0)
+    vbars = (2.0, 3.0, 5.0, 8.0)
     counts = [0] * len(bars)
-    ready = 0
+    vcounts = [0] * len(vbars)
+    ready = no_vol = 0
     for r in rows:
         hist = marks.get(f"{r['kind']}:{r['symbol']}") or []
         mark = oldest_mark(hist, now_ts, RATE_WINDOW_MIN, RATE_WINDOW_MAX_MIN)
@@ -678,8 +770,18 @@ def rate_bars(rows, marks, now_ts):
         for i, bar in enumerate(bars):
             if mv >= bar:
                 counts[i] += 1
+        rv = relative_volume(r, mark)
+        if rv is None:
+            no_vol += 1
+            continue
+        for i, bar in enumerate(vbars):
+            if rv >= bar:
+                vcounts[i] += 1
     return ("  rate bars (" + str(ready) + " with history)  "
-            + "/".join(f"{b:g}%:{n}" for b, n in zip(bars, counts)))
+            + "/".join(f"{b:g}%:{n}" for b, n in zip(bars, counts))
+            + "   volume "
+            + "/".join(f"{b:g}x:{n}" for b, n in zip(vbars, vcounts))
+            + (f"   ({no_vol} no volume figure)" if no_vol else ""))
 
 
 def too_broad(pending, rows):
@@ -691,7 +793,7 @@ def too_broad(pending, rows):
 
 def send_rate(pending, fired, now_ts, overnight, high_bar):
     held = 0
-    for fkey, r, move, elapsed_min in pending[:MAX_ALERTS_PER_RUN]:
+    for fkey, r, move, elapsed_min, rv in pending[:MAX_ALERTS_PER_RUN]:
         # Overnight this is an early signal on a small move - hold it, and do
         # not record it, so it can fire again in daylight if still running.
         if overnight and move < high_bar:
@@ -701,13 +803,13 @@ def send_rate(pending, fired, now_ts, overnight, high_bar):
         price_line = (f"  -  ${r['price']:,.2f}" if r["price"] >= 1 else "")
         push(f"{r['symbol']} +{move:.1f}% in {elapsed_min:.0f} min",
              f"{r['name']}\n"
-             f"+{move:.1f}% in {elapsed_min:.0f} min\n"
+             f"+{move:.1f}% in {elapsed_min:.0f} min  -  {rv:.0f}x volume\n"
              f"now +{r['pct']:.1f}% on the day{price_line}",
              priority="max" if overnight else "high",
              tags="zap",
              click=robinhood_url(r))
         log(f"  RATE {r['symbol']} +{move:.1f}% over {elapsed_min:.0f}min "
-            f"(day {r['pct']:+.1f}%)")
+            f"on {rv:.1f}x volume (day {r['pct']:+.1f}%)")
     if held:
         log(f"  {held} rate signals held until morning")
 
@@ -825,7 +927,11 @@ def main():
     record_marks(crypto_rows, marks, now_ts)
 
     # Rate of change first: it is the earliest signal, so it wins the run cap.
-    craw = collect_rate(crypto_rows, marks, fired, now_ts, CRYPTO_RATE_PCT)
+    craw, cquiet, cunknown = collect_rate(crypto_rows, marks, fired, now_ts,
+                                          CRYPTO_RATE_PCT)
+    if cquiet or cunknown:
+        log(f"  {cquiet} coins climbing on ordinary volume"
+            + (f", {cunknown} with no volume figure" if cunknown else ""))
     if too_broad(craw, crypto_rows):
         log(f"  {len(craw)} of {len(crypto_rows)} coins climbing - "
             f"market-wide, holding rate alerts")
@@ -862,7 +968,11 @@ def main():
             f"({with_avg} with average-volume data)")
 
         record_marks(stock_rows, marks, now_ts)
-        sraw = collect_rate(stock_rows, marks, fired, now_ts, STOCK_RATE_PCT)
+        sraw, squiet, sunknown = collect_rate(stock_rows, marks, fired,
+                                              now_ts, STOCK_RATE_PCT)
+        if squiet or sunknown:
+            log(f"  {squiet} stocks climbing on ordinary volume"
+                + (f", {sunknown} with no volume figure" if sunknown else ""))
         if too_broad(sraw, stock_rows):
             log(f"  {len(sraw)} of {len(stock_rows)} stocks climbing - "
                 f"market-wide, holding rate alerts")
