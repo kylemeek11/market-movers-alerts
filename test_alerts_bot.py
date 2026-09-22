@@ -310,9 +310,13 @@ def crypto_rv(vol_growth):
 # hour, whatever the price did.
 check("flat 24h volume reads as ~1x", abs(crypto_rv(1.0) - 1.0) < 0.01)
 check("a 10% jump in 24h volume is a big surge", crypto_rv(1.10) > 3)
-check("the live 5x bar needs roughly a 20% jump",
-      crypto_rv(1.15) < ab.RATE_MIN_RELVOL <= crypto_rv(1.25),
-      f"{crypto_rv(1.15):.1f} / {crypto_rv(1.25):.1f}")
+# How big a jump in the 24h total the live bar actually demands. Derived from
+# the bar rather than hardcoded, so moving RATE_MIN_RELVOL does not break this.
+needed = (ab.RATE_MIN_RELVOL - 1) * (WINDOW / 1440.0)
+check(f"the live {ab.RATE_MIN_RELVOL:g}x bar needs about a {needed * 100:.0f}%"
+      f" jump in 24h volume",
+      crypto_rv(1 + needed * 0.9) < ab.RATE_MIN_RELVOL <= crypto_rv(1 + needed * 1.1),
+      f"{crypto_rv(1 + needed * 0.9):.2f} / {crypto_rv(1 + needed * 1.1):.2f}")
 check("shrinking volume reads below 1x", crypto_rv(0.98) < 1)
 
 
