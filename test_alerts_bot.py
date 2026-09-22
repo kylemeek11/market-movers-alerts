@@ -53,7 +53,7 @@ def near_price_at(hhmm):
     return min(NEAR_SERIES, key=lambda r: abs(ct(r[0]) - target))[1]
 
 
-def replay_near(stamp_from=None):
+def replay_near(stamp_from=None, pct=None):
     """Run the real record_marks/collect_rate over that morning.
 
     stamp_from limits when NEAR enters the tracked set, which is how the old
@@ -67,7 +67,8 @@ def replay_near(stamp_from=None):
                "dollars": 1.6e9, "hour_pct": None}
         if stamp_from is None or ct(hhmm) >= ct(stamp_from):
             ab.record_marks([row], marks, now)
-        hits = ab.collect_rate([row], marks, fired, now, ab.CRYPTO_RATE_PCT)
+        hits = ab.collect_rate([row], marks, fired, now,
+                               ab.CRYPTO_RATE_PCT if pct is None else pct)
         if hits:
             fkey, r, move, elapsed = hits[0]
             fired[fkey] = now
@@ -75,19 +76,32 @@ def replay_near(stamp_from=None):
     return None
 
 
-print("NEAR replay - the run this was built to catch")
+PEAK = 4.2779          # NEAR's high that morning
+DAY_ALERT_PRICE = 4.23  # what the 15% day threshold got you, at 11:36
+
+print(f"NEAR replay - at the live bar, CRYPTO_RATE_PCT = {ab.CRYPTO_RATE_PCT}%")
 hit = replay_near()
 check("fires before the 15% day alert at 11:36",
       hit is not None and ct(hit[0]) < ct("11:36"), f"got {hit}")
-check("fires within the first half of the run (before 11:00)",
-      hit is not None and ct(hit[0]) < ct("11:00"), f"got {hit}")
-check("fires at a price below $3.90",
-      hit is not None and hit[1] < 3.90, f"got {hit}")
+check("beats the price the day alert got you",
+      hit is not None and hit[1] < DAY_ALERT_PRICE, f"got {hit}")
 if hit:
     print(f"       -> {hit[0]} CT  ${hit[1]:.4f}  "
           f"+{hit[2]:.1f}% over {hit[3]:.0f} min"
-          f"  |  peak $4.2779, so {(4.2779/hit[1]-1)*100:.1f}% still to come"
-          f"  (the alert you actually got: 11:36 @ $4.23)")
+          f"  |  {(PEAK/hit[1]-1)*100:.1f}% still to come"
+          f"  (day alert: 11:36 @ $4.23, 1.2% left)")
+
+# What the current bar costs. The most sensitive setting tested was 2%; if
+# the live bar is higher, this is the price of the quiet, in minutes and in
+# upside left on the table. Printed rather than asserted - the bar is Kyle's
+# call, but it should never be invisible.
+early = replay_near(pct=2.0)
+if early and hit and early[0] != hit[0]:
+    lost_min = (ct(hit[0]) - ct(early[0])) / 60
+    print(f"       at 2%: {early[0]} CT  ${early[1]:.4f}  "
+          f"({(PEAK/early[1]-1)*100:.1f}% still to come)"
+          f"  ->  the current bar costs {lost_min:.0f} min "
+          f"and {(hit[1]/early[1]-1)*100:.1f}% of entry price")
 
 print("\nThe bug this fixes")
 old = replay_near(stamp_from="11:02")
@@ -109,25 +123,37 @@ check("a 10-minute spike does not fire",
       ab.collect_rate([spike], marks, fired, t0 + 10 * 60,
                       ab.CRYPTO_RATE_PCT) == [])
 
-# A steady climb of the shape real runs have: ~2.5% across an hour.
-marks, fired = {}, {}
-creep = {"kind": "crypto", "symbol": "CRP", "name": "Creep", "price": 100.0,
-         "pct": 1.0, "dollars": 5e7, "hour_pct": None}
-for i in range(0, 65, 8):
-    creep["price"] = 100.0 * (1 + 0.0004 * i)
-    ab.record_marks([creep], marks, t0 + i * 60)
-creep["price"] = 102.5
-hits = ab.collect_rate([creep], marks, fired, t0 + 64 * 60, ab.CRYPTO_RATE_PCT)
-check("a 2.5%-per-hour climb fires", len(hits) == 1)
+# A steady climb just over the configured bar must fire, and one just under
+# it must not. Scaled to CRYPTO_RATE_PCT so these keep testing the mechanism
+# rather than a threshold that moved.
+over = ab.CRYPTO_RATE_PCT + 0.5
+under = ab.CRYPTO_RATE_PCT - 0.5
+
+
+def climb_fires(total_pct):
+    marks, fired = {}, {}
+    row = {"kind": "crypto", "symbol": "CRP", "name": "Creep", "price": 100.0,
+           "pct": 1.0, "dollars": 5e7, "hour_pct": None}
+    for i in range(0, 65, 8):
+        row["price"] = 100.0 * (1 + (total_pct / 100.0) * (i / 64.0))
+        ab.record_marks([row], marks, t0 + i * 60)
+    return ab.collect_rate([row], marks, fired, t0 + 64 * 60, ab.CRYPTO_RATE_PCT)
+
+
+hits = climb_fires(over)
+check(f"a steady climb of {over:.1f}%/hr fires", len(hits) == 1)
 check("it reports a 50min+ window", hits and hits[0][3] >= 50)
+check(f"a climb of {under:.1f}%/hr does not", climb_fires(under) == [])
 
 # A stamp older than the window is ignored, so a stalled name cannot fire on
 # ancient history.
 marks, fired = {}, {}
-ab.record_marks([creep], marks, t0)
-creep["price"] = 130.0
+stale = {"kind": "crypto", "symbol": "OLD", "name": "Stale", "price": 100.0,
+         "pct": 1.0, "dollars": 5e7, "hour_pct": None}
+ab.record_marks([stale], marks, t0)
+stale["price"] = 130.0
 check("a stamp older than the window is ignored",
-      ab.collect_rate([creep], marks, fired, t0 + 200 * 60,
+      ab.collect_rate([stale], marks, fired, t0 + 200 * 60,
                       ab.CRYPTO_RATE_PCT) == [])
 
 print("\nCooldown and breadth")
