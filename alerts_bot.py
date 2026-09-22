@@ -135,7 +135,21 @@ STOCK_RATE_PCT = 3.0            # stocks: same bar
 # An earlier week-long crypto backtest said volume confirmation was not worth
 # it. That test asked whether an alert sat inside a run; this one asks whether
 # the price actually went up afterwards, which is the question that matters.
-RATE_MIN_RELVOL = 5.0           # window volume vs the name's own normal pace
+# Lowered 5.0 -> 2.5 on 2026-09-22. At 5x the price bar was being cleared long
+# before the volume caught up, so the alert arrived after the move: UNI was up
+# 4.9% at 17:15 CT but did not buzz until 17:56 at 9.4%, and ZEC likewise at
+# 7.2%. Replayed against those two, 2.5x fires UNI at 17:25 up 4.0% ($9.75 vs
+# the $10.28 it actually alerted at) and ZEC at 18:10 up 7.4%.
+#
+# The cost is known and accepted: in the scoring sample the 3-5x band had the
+# best hit rate of any bucket (35% went on to gain 3%+), and 2-3x fell to 22%.
+# Sitting at 2.5 trades some of that accuracy for about 30 minutes of warning.
+#
+# Note the crypto figure is derived from how fast CoinGecko's 24h volume moves
+# and reads a little high - the bot called both of those alerts 6x where
+# Coinbase's own volume put them at 5.4x and 3.5x - so the effective bar is
+# somewhat looser than the number suggests.
+RATE_MIN_RELVOL = 2.5           # window volume vs the name's own normal pace
 RATE_COOLDOWN_SEC = 45 * 60     # re-alert the same name at most this often
 RATE_MARKS_KEPT = 24            # enough stamps to span the window with drift
 
