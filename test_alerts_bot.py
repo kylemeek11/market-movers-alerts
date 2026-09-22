@@ -53,24 +53,34 @@ def near_price_at(hhmm):
     return min(NEAR_SERIES, key=lambda r: abs(ct(r[0]) - target))[1]
 
 
+def rate(rows, marks, fired, now, pct=None):
+    """collect_rate's alert list, dropping the two diagnostic counters."""
+    hits, _quiet, _unknown = ab.collect_rate(
+        rows, marks, fired, now, ab.CRYPTO_RATE_PCT if pct is None else pct)
+    return hits
+
+
 def replay_near(stamp_from=None, pct=None):
     """Run the real record_marks/collect_rate over that morning.
 
     stamp_from limits when NEAR enters the tracked set, which is how the old
     code behaved - it only stamped coins that had already moved.
+
+    Volume is supplied heavy enough to clear the confirmation gate, because
+    what this replay tests is WHEN the price signal fires. The gate itself is
+    tested on its own further down.
     """
     marks, fired = {}, {}
-    for hhmm in RUN_TIMES:
+    for idx, hhmm in enumerate(RUN_TIMES):
         now = ct(hhmm)
         row = {"kind": "crypto", "symbol": "NEAR", "name": "NEAR Protocol",
                "price": near_price_at(hhmm), "pct": 5.0,
-               "dollars": 1.6e9, "hour_pct": None}
+               "dollars": 1.6e9 * (1 + 0.05 * idx), "hour_pct": None}
         if stamp_from is None or ct(hhmm) >= ct(stamp_from):
             ab.record_marks([row], marks, now)
-        hits = ab.collect_rate([row], marks, fired, now,
-                               ab.CRYPTO_RATE_PCT if pct is None else pct)
+        hits = rate([row], marks, fired, now, pct)
         if hits:
-            fkey, r, move, elapsed = hits[0]
+            fkey, r, move, elapsed, rv = hits[0]
             fired[fkey] = now
             return hhmm, r["price"], move, elapsed
     return None
@@ -112,6 +122,7 @@ print("\nThe measured window")
 t0 = ct("10:00")
 spike = {"kind": "crypto", "symbol": "SPK", "name": "Spike", "price": 100.0,
          "pct": 1.0, "dollars": 5e7, "hour_pct": None}
+HEAVY = 1.30      # 30% more 24h volume across the window - about 7x normal
 
 # A sharp move with no history behind it must NOT fire: the backtest found
 # 10-20 minute spikes have no follow-through at all, so the window starts at
@@ -120,8 +131,7 @@ marks, fired = {}, {}
 ab.record_marks([spike], marks, t0)
 spike["price"] = 120.0
 check("a 10-minute spike does not fire",
-      ab.collect_rate([spike], marks, fired, t0 + 10 * 60,
-                      ab.CRYPTO_RATE_PCT) == [])
+      rate([spike], marks, fired, t0 + 10 * 60) == [])
 
 # A steady climb just over the configured bar must fire, and one just under
 # it must not. Scaled to CRYPTO_RATE_PCT so these keep testing the mechanism
@@ -130,14 +140,15 @@ over = ab.CRYPTO_RATE_PCT + 0.5
 under = ab.CRYPTO_RATE_PCT - 0.5
 
 
-def climb_fires(total_pct):
+def climb_fires(total_pct, vol_growth=HEAVY):
     marks, fired = {}, {}
     row = {"kind": "crypto", "symbol": "CRP", "name": "Creep", "price": 100.0,
            "pct": 1.0, "dollars": 5e7, "hour_pct": None}
     for i in range(0, 65, 8):
         row["price"] = 100.0 * (1 + (total_pct / 100.0) * (i / 64.0))
+        row["dollars"] = 5e7 * (1 + (vol_growth - 1) * (i / 64.0))
         ab.record_marks([row], marks, t0 + i * 60)
-    return ab.collect_rate([row], marks, fired, t0 + 64 * 60, ab.CRYPTO_RATE_PCT)
+    return rate([row], marks, fired, t0 + 64 * 60)
 
 
 hits = climb_fires(over)
@@ -153,8 +164,7 @@ stale = {"kind": "crypto", "symbol": "OLD", "name": "Stale", "price": 100.0,
 ab.record_marks([stale], marks, t0)
 stale["price"] = 130.0
 check("a stamp older than the window is ignored",
-      ab.collect_rate([stale], marks, fired, t0 + 200 * 60,
-                      ab.CRYPTO_RATE_PCT) == [])
+      rate([stale], marks, fired, t0 + 200 * 60) == [])
 
 print("\nCooldown and breadth")
 # Stamp and check in the same order a live run does - record_marks prunes
@@ -167,8 +177,9 @@ fires = []
 for i in range(0, 200, 8):
     now = t0 + i * 60
     runner["price"] = 100.0 * (1 + 0.001 * i)     # +0.1%/min, a steady climb
+    runner["dollars"] = 5e7 * (1 + 0.005 * i)     # and on rising volume
     ab.record_marks([runner], marks, now)
-    for hit in ab.collect_rate([runner], marks, fired, now, ab.CRYPTO_RATE_PCT):
+    for hit in rate([runner], marks, fired, now):
         fired[hit[0]] = now
         fires.append(i)
 check("a steady climb fires", len(fires) >= 1, fires)
@@ -278,6 +289,75 @@ rows_all = with_urlopen(coins, lambda: ab.screen_crypto(None))
 rows_rh = with_urlopen(coins, lambda: ab.screen_crypto({"RUN"}))
 check("no list means no extra filtering", {r["symbol"] for r in rows_all} == {"FLAT", "RUN"})
 check("a list narrows the tracked universe", {r["symbol"] for r in rows_rh} == {"RUN"})
+
+print("\nVolume confirmation")
+
+# The gate exists because, scored against a real day of alerts, names moving
+# on ordinary volume went nowhere far more often. These check the arithmetic
+# that turns each source's awkward counter into a window relative volume.
+
+WINDOW = 70.0   # minutes, the middle of the live window
+
+
+def crypto_rv(vol_growth):
+    """relative_volume for a coin whose 24h dollar volume grew by this much."""
+    row = {"kind": "crypto", "symbol": "C", "price": 1.0, "pct": 1.0,
+           "dollars": 1e8 * vol_growth, "hour_pct": None}
+    return ab.relative_volume(row, (0, 1.0, WINDOW, 1e8))
+
+
+# A rolling 24h total that has not moved means the last hour was a normal
+# hour, whatever the price did.
+check("flat 24h volume reads as ~1x", abs(crypto_rv(1.0) - 1.0) < 0.01)
+check("a 10% jump in 24h volume is a big surge", crypto_rv(1.10) > 3)
+check("the live 5x bar needs roughly a 20% jump",
+      crypto_rv(1.15) < ab.RATE_MIN_RELVOL <= crypto_rv(1.25),
+      f"{crypto_rv(1.15):.1f} / {crypto_rv(1.25):.1f}")
+check("shrinking volume reads below 1x", crypto_rv(0.98) < 1)
+
+
+def stock_rv(shares_in_window, avg_daily):
+    row = {"kind": "stock", "symbol": "S", "price": 10.0, "pct": 1.0,
+           "volume": 1e6 + shares_in_window, "avg_volume": avg_daily}
+    return ab.relative_volume(row, (0, 10.0, WINDOW, 1e6))
+
+
+# A normal 70 minutes is 70/390 of an average day.
+normal = 1e7 * (WINDOW / ab.SESSION_MINUTES)
+check("an average pace reads as ~1x", abs(stock_rv(normal, 1e7) - 1.0) < 0.01)
+check("five times the pace reads as 5x",
+      abs(stock_rv(5 * normal, 1e7) - 5.0) < 0.01)
+check("a session reset (counter goes backwards) is unknown, not zero",
+      ab.relative_volume({"kind": "stock", "symbol": "S", "price": 10.0,
+                          "pct": 1.0, "volume": 5e5, "avg_volume": 1e7},
+                         (0, 10.0, WINDOW, 1e6)) is None)
+check("no average volume is unknown, not a divide by zero",
+      stock_rv(normal, 0) is None)
+
+# Missing data must not alert, and must be counted rather than silent.
+marks, fired = {}, {}
+novol = {"kind": "crypto", "symbol": "NV", "name": "No Volume", "price": 100.0,
+         "pct": 1.0, "dollars": None, "hour_pct": None}
+for i in range(0, 65, 8):
+    novol["price"] = 100.0 * (1 + 0.001 * i)
+    ab.record_marks([novol], marks, t0 + i * 60)
+hits, quiet, unknown = ab.collect_rate([novol], marks, fired, t0 + 64 * 60,
+                                       ab.CRYPTO_RATE_PCT)
+check("a name with no volume figure does not alert", hits == [])
+check("...and is counted as unknown, not quietly dropped", unknown == 1)
+
+# A real climb on ordinary volume is held back, and counted.
+hits2 = climb_fires(ab.CRYPTO_RATE_PCT + 0.5, vol_growth=1.0)
+check("a climb on ordinary volume does not alert", hits2 == [])
+
+# Stamps written before volume tracking existed must not crash or alert.
+old_style = {"crypto:OLD2": [[t0, 100.0], [t0 + 30 * 60, 103.0]]}
+mark = ab.oldest_mark(old_style["crypto:OLD2"], t0 + 60 * 60, 50, 75)
+check("a pre-volume stamp still parses", mark is not None and mark[3] is None)
+check("...and yields no volume reading",
+      ab.relative_volume({"kind": "crypto", "symbol": "OLD2", "price": 110.0,
+                          "pct": 1.0, "dollars": 2e8, "hour_pct": None},
+                         mark) is None)
 
 print("\nStale marks")
 marks = {"crypto:OLD": [[t0 - 3 * 3600, 1.0]], "crypto:NEW": [[t0, 1.0]]}
