@@ -92,11 +92,20 @@ TICKER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,14}$")
 #     precision at the cost of 85-190 minutes of lateness.
 # A 50-75 minute lookback at a low bar beat everything else tried.
 #
-# At 2% this catches 89% of runs, fires about 80 times a day across the
-# universe, lands a median 3.25 hours into a 12-hour run with 6.6% still to
-# come, and about half of all alerts land inside a real +8% run against a
-# 1.7% base rate. Raise CRYPTO_RATE_PCT to 2.5 for ~51/day and 77% of runs,
-# or 3.0 for ~33/day and 68%. See SETUP.md for the full table.
+# Measured at 2%: catches 89% of runs, lands a median 3.25 hours into a
+# 12-hour run with 6.6% still to come, and about half of all alerts land
+# inside a real +8% run against a 1.7% base rate.
+#
+# SET TO 5% ON 2026-09-22 at Kyle's request. The 2% bar produced ~400
+# alerts/day in live use - far above the ~82/day the backtest projected,
+# because the backtest week was calmer than the day it shipped into and
+# because the stock side was never backtested at all. Measured against his
+# own 24 hours of alerts, 5% leaves about 41/day. The cost is real and worth
+# restating before anyone lowers it again: at 5% the signal catches roughly a
+# quarter of runs rather than nine in ten, and arrives much later. On the
+# NEAR run it fires at $3.91 instead of $3.79 - still well ahead of the $4.23
+# the day threshold managed, but 19 minutes behind. 3.0 is the middle
+# (~126/day on that same sample). See SETUP.md for the full table.
 #
 # Honest limit: Yahoo delays stock quotes ~15 minutes, so a stock rate is a
 # real move that finished ~15 minutes ago. CoinGecko caches about a minute,
@@ -104,8 +113,8 @@ TICKER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,14}$")
 # above, which was crypto only.
 RATE_WINDOW_MIN = 50.0          # ignore a stamp younger than this
 RATE_WINDOW_MAX_MIN = 75.0      # ...or older than this
-CRYPTO_RATE_PCT = 2.0           # crypto: gain across that window worth a look
-STOCK_RATE_PCT = 2.0            # stocks: unmeasured, carried over by analogy
+CRYPTO_RATE_PCT = 5.0           # crypto: gain across that window worth a look
+STOCK_RATE_PCT = 5.0            # stocks: same bar; see the note below
 RATE_COOLDOWN_SEC = 45 * 60     # re-alert the same name at most this often
 RATE_MARKS_KEPT = 24            # enough stamps to span the window with drift
 
