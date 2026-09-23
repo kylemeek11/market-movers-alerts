@@ -363,6 +363,75 @@ check("...and yields no volume reading",
                           "pct": 1.0, "dollars": 2e8, "hour_pct": None},
                          mark) is None)
 
+print("\nStock price band")
+
+# Kyle only wants stocks under $10. The cap has to reach the Yahoo query, not
+# just the local check: the screener returns at most 250 names sorted by
+# percent change, so filtering afterwards would waste most of that budget on
+# names too expensive to alert on.
+
+
+class FakeYF:
+    """Stands in for the yfinance module, capturing the query it is handed."""
+
+    def __init__(self, quotes):
+        self.quotes = quotes
+        self.queries = []
+
+    def screen(self, query, offset=0, size=250, **kw):
+        self.queries.append(query.to_dict())
+        return {"quotes": self.quotes if offset == 0 else []}
+
+
+def quote(sym, price, chg=4.0, vol=12_000_000):
+    return {"symbol": sym, "shortName": sym, "regularMarketChangePercent": chg,
+            "regularMarketPrice": price, "regularMarketVolume": vol,
+            "marketCap": 500_000_000, "averageDailyVolume3Month": 1_000_000,
+            "financialCurrency": "USD"}
+
+
+try:
+    import yfinance  # noqa: F401
+except ImportError:
+    print("  skip  yfinance not installed")
+else:
+    yf = FakeYF([
+        quote("TOOCHEAP", 2.50),
+        quote("LOW", 3.10),
+        quote("MID", 7.58),
+        quote("EDGE", 9.99),
+        quote("OVER", 10.01),
+        quote("WAYOVER", 268.34),
+    ])
+    rows = ab.screen_stocks(yf, ab.STOCK_TRACK_FLOOR)
+    got = {r["symbol"] for r in rows}
+    check("keeps stocks inside the price band", got == {"LOW", "MID", "EDGE"}, sorted(got))
+    check("drops anything at or over the cap", "OVER" not in got and "WAYOVER" not in got)
+    check("still drops penny stocks under the floor", "TOOCHEAP" not in got)
+
+    # The cap must be in the query Yahoo actually receives.
+    ops = yf.queries[0]["operands"]
+    price_terms = [o for o in ops if o["operands"][0] == "intradayprice"]
+    check("the query carries both a floor and a cap", len(price_terms) == 2,
+          price_terms)
+    check("the cap is sent as a less-than on intradayprice",
+          any(o["operator"] == "LT" and o["operands"][1] == ab.MAX_PRICE
+              for o in price_terms), price_terms)
+    check("the floor is still sent",
+          any(o["operator"] == "GT" and o["operands"][1] == ab.MIN_PRICE
+              for o in price_terms), price_terms)
+    check("the band is sane", ab.MIN_PRICE < ab.MAX_PRICE)
+
+    # Worth pinning because it surprised me: MIN_DOLLAR_VOLUME bites much
+    # harder once the price cap is on. A $10 name clears $25M on 2.5M shares;
+    # a $3 name needs over 8M. Cheap stocks are not automatically in.
+    thin = FakeYF([quote("THIN", 3.10, vol=5_000_000)])
+    check("a cheap stock still has to trade real money",
+          ab.screen_stocks(thin, ab.STOCK_TRACK_FLOOR) == [])
+    shares_needed = ab.MIN_DOLLAR_VOLUME / ab.MAX_PRICE
+    check(f"at the ${ab.MAX_PRICE:.0f} cap that means {shares_needed/1e6:.1f}M+ shares",
+          shares_needed > 1_000_000)
+
 print("\nStale marks")
 marks = {"crypto:OLD": [[t0 - 3 * 3600, 1.0]], "crypto:NEW": [[t0, 1.0]]}
 ab.drop_stale_marks(marks, t0)
