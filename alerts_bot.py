@@ -29,6 +29,13 @@ MIN_GAIN_PCT = 5.0
 MIN_DOLLAR_VOLUME = 25_000_000
 MIN_MARKET_CAP = 100_000_000
 MIN_PRICE = 3.00
+# Kyle only wants stocks he can take a real position in, so the screen is
+# capped rather than just floored. This goes into the Yahoo query itself, not
+# just the local check below: the screener returns at most 250 names sorted by
+# percent change, so filtering server-side means those 250 are the best movers
+# UNDER $10 rather than the best movers overall, of which only about a quarter
+# were ever under $10.
+MAX_PRICE = 10.00
 MIN_DAY_VOLUME = 100_000
 
 ALERT_LEVELS = [15.0, 20.0, 30.0, 50.0]
@@ -346,6 +353,7 @@ def screen_stocks(yf, floor):
             EquityQuery("eq", ["region", "us"]),
             EquityQuery("gt", ["dayvolume", MIN_DAY_VOLUME]),
             EquityQuery("gt", ["intradayprice", MIN_PRICE]),
+            EquityQuery("lt", ["intradayprice", MAX_PRICE]),
         ]
         if with_cap:
             # This term also keeps ETFs out for free: Yahoo models funds with
@@ -383,7 +391,9 @@ def screen_stocks(yf, floor):
         vol = q.get("regularMarketVolume") or 0
         if chg is None or chg < floor:
             continue
-        if price < MIN_PRICE or vol < MIN_DAY_VOLUME:
+        if price < MIN_PRICE or price > MAX_PRICE:
+            continue
+        if vol < MIN_DAY_VOLUME:
             continue
         if (q.get("marketCap") or 0) < MIN_MARKET_CAP:
             continue
