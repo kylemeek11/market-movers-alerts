@@ -2,7 +2,7 @@ name: Stop order check
 
 on:
   schedule:
-    - cron: "0 0,8,12,16,20 * * *"
+    - cron: "0 0,4,8,12,16,20 * * *"
   workflow_dispatch:
     inputs:
       force_alert:
