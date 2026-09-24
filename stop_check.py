@@ -59,11 +59,15 @@ RUNNING_MIN_ROOM_PCT = 10.0
 # How far the live stop has to drift from the recommendation before it is
 # worth a notification, as a percentage of the current price.
 DRIFT_PCT = 2.0
-# Overnight the bar is higher, so a Sleep Focus exception stays safe.
+# Quiet hours are OFF by Kyle's choice (2026-09-24): every run, including the
+# 3am one, uses the same DRIFT_PCT bar. Set QUIET_HOURS_ENABLED back to True
+# to restore a softer overnight window - the hours below are kept ready for
+# that, and OVERNIGHT_DRIFT_PCT is inert until it happens.
+QUIET_HOURS_ENABLED = False
 OVERNIGHT_DRIFT_PCT = 4.0
 USER_TZ = "America/Chicago"
-OVERNIGHT_START_HOUR = 22
-OVERNIGHT_END_HOUR = 7
+OVERNIGHT_START_HOUR = 0
+OVERNIGHT_END_HOUR = 8
 
 # Don't re-send the same advice. Suppress a repeat within this many hours
 # unless the recommendation itself has moved by MOVED_PCT of price.
@@ -88,11 +92,21 @@ def local_now(tz_name=USER_TZ):
         return None
 
 
-def is_overnight():
-    now = local_now()
-    if now is None:
+def is_overnight(hour=None):
+    """True inside the quiet window, which may or may not wrap past midnight.
+
+    The modulo keeps both cases in one expression: with a window of 0-8 it is
+    a plain range, and with one of 22-7 it wraps. Passing `hour` is for tests.
+    """
+    if not QUIET_HOURS_ENABLED:
         return False
-    return now.hour >= OVERNIGHT_START_HOUR or now.hour < OVERNIGHT_END_HOUR
+    if hour is None:
+        now = local_now()
+        if now is None:
+            return False
+        hour = now.hour
+    span = (OVERNIGHT_END_HOUR - OVERNIGHT_START_HOUR) % 24
+    return (hour - OVERNIGHT_START_HOUR) % 24 < span
 
 
 # --- Market data ------------------------------------------------------------
