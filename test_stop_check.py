@@ -97,6 +97,31 @@ def test_overnight_skips_incomplete_nights():
     check("incomplete night is skipped",
           len(sc.overnight_drawdowns(gapped)) == full - 1)
 
+def test_is_overnight_window():
+    # Quiet hours are off: every hour of the day uses the same alert bar.
+    check("no hour is quiet",
+          not any(sc.is_overnight(h) for h in range(24)))
+    check("3am is a normal check", sc.is_overnight(3) is False)
+    check("7am is a normal check", sc.is_overnight(7) is False)
+
+    # The window logic must still be correct for whenever it is switched on,
+    # including a window that wraps past midnight.
+    enabled, start, end = (sc.QUIET_HOURS_ENABLED,
+                           sc.OVERNIGHT_START_HOUR, sc.OVERNIGHT_END_HOUR)
+    try:
+        sc.QUIET_HOURS_ENABLED = True
+        sc.OVERNIGHT_START_HOUR, sc.OVERNIGHT_END_HOUR = 0, 8
+        check("switched on, midnight to 8am is quiet",
+              [h for h in range(24) if sc.is_overnight(h)] == list(range(0, 8)))
+        sc.OVERNIGHT_START_HOUR, sc.OVERNIGHT_END_HOUR = 22, 7
+        check("a wrapping window still works",
+              [h for h in range(24) if sc.is_overnight(h)]
+              == [0, 1, 2, 3, 4, 5, 6, 22, 23])
+    finally:
+        (sc.QUIET_HOURS_ENABLED,
+         sc.OVERNIGHT_START_HOUR, sc.OVERNIGHT_END_HOUR) = enabled, start, end
+
+
 
 def test_percentile():
     vals = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
