@@ -39,7 +39,7 @@
       "avg_cost": 0.00000892,
       "spread_pct": 0.96,
       "current_stop": 0.00000500,
-      "room_override_pct": null,
+      "room_override_pct": 12,
       "decimals": 8
     }
   ]
