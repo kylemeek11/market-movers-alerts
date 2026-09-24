@@ -33,6 +33,8 @@ jobs:
         with:
           python-version: "3.12"
 
+      # Remembers what advice already went out, so a stop that is drifting
+      # slowly doesn't generate the same notification every four hours.
       - name: Restore stop state
         uses: actions/cache/restore@v4
         with:
