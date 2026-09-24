@@ -213,6 +213,40 @@ MAX_ALERTS_PER_RUN = 10
 HIGH_PRIORITY_LEVEL = 20.0             # stocks at/above this break through silence
 CRYPTO_HIGH_PRIORITY_LEVEL = 40.0      # crypto has to move harder to do the same
 
+# Overnight rate bar. THIS WAS A BUG until 2026-09-23: send_rate held any
+# overnight rate signal below `high_bar`, and `high_bar` was the DAY threshold
+# - 40% for crypto. A rate move is measured over 50-75 minutes and is
+# typically 3-6%, so it could never clear 40 and every single overnight rate
+# alert was suppressed. Raydium ran 03:51-08:21 CDT on 2026-09-23 for +11.5%;
+# the signal found it at 05:00 and held it until the move was over.
+#
+# Measured on 16 Robinhood-tradable coins over 5 nights (22:00-07:00 CDT,
+# 45-minute cooldown, price only - the live 2.5x volume test cuts these
+# further):
+#     3% -> 6.8 wake-ups/night      5% -> 1.8/night
+#     4% -> 3.0 wake-ups/night      6% -> 1.5/night
+# Replayed against Raydium: 4% fires 05:00 CDT at $1.8585 with 6.7% still to
+# come. 5% never fires at all. 4.0 is the bar that would have caught it.
+OVERNIGHT_RATE_PCT = 4.0
+
+# Execution cost on Robinhood crypto, measured from Kyle's own fills on
+# 2026-09-23: ten orders across ETH, DOGE, LTC, UNI, NEAR and RAY, buys and
+# sells. Every one landed OUTSIDE the real market's one-minute range, mean
+# 0.944% per side, range 0.81-1.06%, with no separate fee line - the cost is
+# inside the fill price. It is the same ~0.94% on ETH (real spread 0.0007%) as
+# on RAY, so it tracks no actual liquidity cost and does not shrink on the
+# majors.
+#
+# Two consequences the alerts now carry:
+#   - A move has to clear ~1.9% round trip before it is worth anything. The
+#     alert fires at 4%, so roughly half of the move it is reporting is gone.
+#   - The stop is evaluated against Robinhood's marked-down bid, so it trips
+#     ~0.94% EARLY in real-market terms. NEAR on 2026-09-17 was stopped at
+#     $3.3942 against a $3.40 stop when the market's lowest print was $3.4144
+#     - the market never reached the stop. Set the stop wider to compensate.
+EXEC_MARKUP_PCT = 0.94
+STOP_HINT_PCT = 10.0                   # the stop size the hint is sized for
+
 MARKET_TZ = "America/New_York"
 MARKET_OPEN_HOUR = 8
 MARKET_CLOSE_HOUR = 17
@@ -516,6 +550,9 @@ def screen_crypto(allowed=None):
             "price": float(price),
             "dollars": float(vol),
             "hour_pct": hour,
+            # Run maturity. The median crypto run is +10.9% end to end, so a
+            # coin already well off its 24h low is late, not early.
+            "low_24h": c.get("low_24h"),
             "candidate": float(chg) >= min(CRYPTO_ALERT_LEVELS),
         })
     if odd:
@@ -628,6 +665,28 @@ def robinhood_tradable(row, cache):
 def filter_tradable(items, cache, row_index):
     """Keep only entries whose symbol Robinhood actually carries."""
     return [it for it in items if robinhood_tradable(it[row_index], cache)]
+
+
+def money(p):
+    """Price string that survives both $85,000 and $0.0000061."""
+    if p is None:
+        return "?"
+    return f"${p:,.2f}" if p >= 1 else f"${p:,.6f}".rstrip("0")
+
+
+def cost_hints(price):
+    """Break-even price and a stop that actually lands where you meant it.
+
+    Buying pays ~EXEC_MARKUP_PCT over market and selling gives it up again, so
+    break-even is the market price at which the sale nets the purchase back.
+    The stop is quoted against Robinhood's bid, which already sits below the
+    market, so a naive -10% triggers at roughly -9% of real price movement -
+    the hint pushes it back out.
+    """
+    m = EXEC_MARKUP_PCT / 100.0
+    breakeven = price * (1 + m) / (1 - m)
+    stop = price * (1 - STOP_HINT_PCT / 100.0) * (1 - m)
+    return breakeven, stop
 
 
 def format_body(row):
@@ -815,20 +874,36 @@ def too_broad(pending, rows):
     return len(pending) > max(3, int(RATE_BREADTH_MAX * len(rows)))
 
 
-def send_rate(pending, fired, now_ts, overnight, high_bar):
+def send_rate(pending, fired, now_ts, overnight, night_bar=OVERNIGHT_RATE_PCT):
     held = 0
     for fkey, r, move, elapsed_min, rv in pending[:MAX_ALERTS_PER_RUN]:
-        # Overnight this is an early signal on a small move - hold it, and do
-        # not record it, so it can fire again in daylight if still running.
-        if overnight and move < high_bar:
+        # Overnight, only a genuine run is worth waking him for. Compared
+        # against the RATE bar, not the day threshold - see OVERNIGHT_RATE_PCT
+        # for what that mistake cost. Held signals are deliberately not
+        # recorded, so a run still going at breakfast alerts again.
+        if overnight and move < night_bar:
             held += 1
             continue
         fired[fkey] = now_ts
-        price_line = (f"  -  ${r['price']:,.2f}" if r["price"] >= 1 else "")
+
+        lines = [f"{r['name']}  -  {money(r['price'])}",
+                 f"+{move:.1f}% in {elapsed_min:.0f} min on {rv:.0f}x volume"]
+
+        day = f"day +{r['pct']:.1f}%"
+        low = r.get("low_24h")
+        if low and low > 0:
+            off_low = (r["price"] / low - 1) * 100
+            # Median run is ~10.9% end to end; past that he is buying maturity.
+            day += f"  -  +{off_low:.0f}% off 24h low"
+        lines.append(day)
+
+        if r["kind"] == "crypto":
+            breakeven, stop = cost_hints(r["price"])
+            lines.append(f"break-even {money(breakeven)}  -  "
+                         f"{STOP_HINT_PCT:.0f}% stop {money(stop)}")
+
         push(f"{r['symbol']} +{move:.1f}% in {elapsed_min:.0f} min",
-             f"{r['name']}\n"
-             f"+{move:.1f}% in {elapsed_min:.0f} min  -  {rv:.0f}x volume\n"
-             f"now +{r['pct']:.1f}% on the day{price_line}",
+             "\n".join(lines),
              priority="max" if overnight else "high",
              tags="zap",
              click=robinhood_url(r))
@@ -965,7 +1040,7 @@ def main():
         dropped = len(craw) - len(crate)
         log(f"{len(crate)} coins climbing fast enough to flag"
             + (f" ({dropped} dropped - not on Robinhood)" if dropped else ""))
-    send_rate(crate, fired, now_ts, overnight, CRYPTO_HIGH_PRIORITY_LEVEL)
+    send_rate(crate, fired, now_ts, overnight)
     log(rate_bars(crypto_rows, marks, now_ts))
 
     crypto_pending = filter_tradable(
@@ -1006,7 +1081,7 @@ def main():
             dropped = len(sraw) - len(srate)
             log(f"{len(srate)} stocks climbing fast enough to flag"
                 + (f" ({dropped} dropped - not on Robinhood)" if dropped else ""))
-        send_rate(srate, fired, now_ts, overnight, HIGH_PRIORITY_LEVEL)
+        send_rate(srate, fired, now_ts, overnight)
         log(rate_bars(stock_rows, marks, now_ts))
 
         fraction = session_fraction()
