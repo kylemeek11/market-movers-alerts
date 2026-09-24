@@ -1,0 +1,53 @@
+yaml
+name: Stop order check
+
+on:
+  schedule:
+    - cron: "0 0,8,12,16,20 * * *"
+  workflow_dispatch:
+    inputs:
+      force_alert:
+        description: "Send the full rundown even if nothing needs changing"
+        type: boolean
+        default: false
+
+concurrency:
+  group: stop-check
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Restore stop state
+        uses: actions/cache/restore@v4
+        with:
+          path: state
+          key: stop-state-${{ github.run_id }}
+          restore-keys: stop-state-
+
+      - name: Recalculate stops
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          FORCE_ALERT: ${{ inputs.force_alert && '1' || '0' }}
+        run: |
+          mkdir -p state
+          python stop_check.py
+
+      - name: Save stop state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state
+          key: stop-state-${{ github.run_id }}
