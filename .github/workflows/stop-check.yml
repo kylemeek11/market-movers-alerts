@@ -2,6 +2,10 @@ name: Stop order check
 
 on:
   schedule:
+    # Times are UTC. During CDT (UTC-5) these land at roughly 3am, 7am, 11am,
+    # 3pm, 7pm and 11pm Central - every four hours, all equally sensitive
+    # (quiet hours are switched off in stop_check.py). After the November 1
+    # switch to CST they all shift an hour earlier; adjust then if it matters.
     - cron: "0 0,4,8,12,16,20 * * *"
   workflow_dispatch:
     inputs:
