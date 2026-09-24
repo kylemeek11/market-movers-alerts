@@ -38,7 +38,7 @@
       "qty": 100000000,
       "avg_cost": 0.00000892,
       "spread_pct": 0.96,
-      "current_stop": .000005,
+      "current_stop": 0.00000500,
       "room_override_pct": null,
       "decimals": 8
     }
