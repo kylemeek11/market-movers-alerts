@@ -1,0 +1,73 @@
+name: Catalyst watcher
+
+on:
+  schedule:
+    # Weekly calendar: Sunday 22:00 UTC (5pm CDT), so it lands before the week
+    # rather than during it.
+    - cron: "0 22 * * 0"
+    # Daily change poll: 11:00 UTC (6am CDT) on weekdays. Trial registry
+    # updates and most pre-market 8-Ks are in by then.
+    - cron: "0 11 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      job:
+        description: "Which job to run"
+        type: choice
+        options: [weekly, daily, test]
+        default: weekly
+
+concurrency:
+  group: catalyst-watcher
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # Only needed for the float / short-interest screen in the weekly job.
+      - name: Install yfinance
+        run: pip install --quiet yfinance
+
+      - name: Restore catalyst state
+        uses: actions/cache/restore@v4
+        with:
+          path: state
+          key: catalyst-state-${{ github.run_id }}
+          restore-keys: catalyst-state-
+
+      # Which job: the cron that fired decides it, unless dispatched by hand.
+      - name: Pick the job
+        id: pick
+        run: |
+          if [ -n "${{ inputs.job }}" ]; then
+            echo "flag=--${{ inputs.job }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event.schedule }}" = "0 22 * * 0" ]; then
+            echo "flag=--weekly" >> "$GITHUB_OUTPUT"
+          else
+            echo "flag=--daily" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run the watcher
+        env:
+          NTFY_CATALYST_TOPIC: ${{ secrets.NTFY_CATALYST_TOPIC }}
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+        run: python catalysts.py ${{ steps.pick.outputs.flag }}
+
+      - name: Save catalyst state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state
+          key: catalyst-state-${{ github.run_id }}
