@@ -1,14 +1,14 @@
 {
   "_note": "Edit this when you buy, sell, or enter new stop orders. 'current_stop' is what you actually have live on Robinhood right now - set it to null if you have no stop on that coin, and the next run will tell you what to enter. 'spread_pct' is the 'Buy spread (x%)' figure from the coin's order ticket; it drifts slowly, so re-read it every few weeks. 'room_override_pct' forces a width instead of the measured one; leave null to let the script decide.",
-  "_updated": "2026-09-24",
+  "_updated": "2026-09-25",
   "positions": [
     {
       "symbol": "LTC",
       "product": "LTC-USD",
       "qty": 525,
       "avg_cost": 67.21,
-      "spread_pct": 0.95,
-      "current_stop": 66.94,
+      "spread_pct": 0.96,
+      "current_stop": 66.59,
       "room_override_pct": null,
       "decimals": 2
     },
@@ -18,7 +18,7 @@
       "qty": 2500,
       "avg_cost": 4.5129,
       "spread_pct": 0.98,
-      "current_stop": 4.3611,
+      "current_stop": 4.0494,
       "room_override_pct": null,
       "decimals": 4
     },
@@ -27,8 +27,8 @@
       "product": "RAY-USD",
       "qty": 5000,
       "avg_cost": 2.06687,
-      "spread_pct": 0.99,
-      "current_stop": 1.88376,
+      "spread_pct": 0.98,
+      "current_stop": 1.78969,
       "room_override_pct": null,
       "decimals": 5
     },
@@ -37,7 +37,7 @@
       "product": "SHIB-USD",
       "qty": 100000000,
       "avg_cost": 0.00000892,
-      "spread_pct": 0.96,
+      "spread_pct": 0.93,
       "current_stop": 0.00000500,
       "room_override_pct": 12,
       "decimals": 8
