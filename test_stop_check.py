@@ -208,6 +208,73 @@ def test_alert_reason():
     check("a too-tight stop is named as such", r and "too tight" in r, r)
 
 
+def test_breakeven_floor():
+    # NEAR as of 2026-09-25: avg 4.5129, exchange-routed, live stop 4.7027.
+    near_pos = {"symbol": "NEAR", "avg_cost": 4.5129, "routing": "exchange"}
+    be = sc.breakeven_stop(near_pos, 4)
+    check("exchange breakeven grosses up fee + slippage",
+          near(be, 4.5655, 1e-9), be)
+    check("breakeven rounds up, never down",
+          be >= 4.5129 / (1 - 1.15 / 100))
+    mm = sc.breakeven_stop({"avg_cost": 2.06687, "routing": "market_maker"}, 5)
+    check("market-maker breakeven is cost + slippage only",
+          near(mm, 2.07102, 1e-9), mm)
+    unk = sc.breakeven_stop({"avg_cost": 4.5129}, 4)
+    check("unknown routing is treated as exchange", unk == be, unk)
+    own = sc.breakeven_stop({"avg_cost": 100.0, "sell_fee_pct": 0.25}, 2)
+    check("an explicit fee overrides the tier", near(own, 100.46, 1e-9), own)
+
+    # Lock price: where the measured stop first reaches breakeven.
+    lp = sc.lock_price(be, 10.0, 0.98)
+    check("lock engages ~13% above cost at 10% room",
+          12.0 < (lp / 4.5129 - 1) * 100 < 14.0, lp)
+
+    calm = make_candles(base=4.60, night_drops={1: 4.0, 2: 3.0})
+    base = {"symbol": "NEAR", "product": "NEAR-USD", "qty": 2500,
+            "avg_cost": 4.5129, "spread_pct": 0.98, "routing": "exchange",
+            "room_override_pct": None, "decimals": 4}
+
+    # Locked (live stop above breakeven), price slips: floor holds.
+    ev = sc.evaluate(dict(base, current_stop=4.7027), 4.60, calm)
+    check("locked position is flagged", ev["locked"] is True)
+    check("measured stop would sit below breakeven",
+          ev["measured_stop"] < ev["breakeven"], ev["measured_stop"])
+    check("recommendation floored at breakeven",
+          ev["floored"] and ev["stop"] == ev["breakeven"], ev["stop"])
+    check("vs_cost is no longer negative once floored", ev["vs_cost"] >= 0,
+          ev["vs_cost"])
+
+    # Not locked (live stop below breakeven): the floor stays out of the way,
+    # because forcing it would put the stop inside the noise.
+    ev = sc.evaluate(dict(base, current_stop=4.35394), 4.60, calm)
+    check("unlocked position is not floored",
+          not ev["floored"] and ev["stop"] == ev["measured_stop"])
+    check("describe says where the lock engages",
+          "locks in once price reaches" in sc.describe(ev, "x"))
+
+    # Locked and the measured stop is already higher: normal trailing.
+    hot = make_candles(base=5.60, night_drops={1: 4.0, 2: 3.0})
+    ev = sc.evaluate(dict(base, current_stop=4.7027), 5.60, hot)
+    check("above the floor, the measured stop wins",
+          not ev["floored"] and ev["stop"] == ev["measured_stop"]
+          and ev["stop"] > ev["breakeven"], ev["stop"])
+
+    # Switch off: old behaviour.
+    try:
+        sc.BREAKEVEN_FLOOR = False
+        ev = sc.evaluate(dict(base, current_stop=4.7027), 4.60, calm)
+        check("floor can be switched off", not ev["floored"]
+              and ev["stop"] == ev["measured_stop"])
+    finally:
+        sc.BREAKEVEN_FLOOR = True
+
+    # Price back near breakeven with the floor on: explain, don't alarm.
+    ev = {"price": 4.58, "stop": 4.5655, "current_stop": 4.5655,
+          "running": False, "floored": True}
+    r = sc.alert_reason(ev, False)
+    check("floor near the market is explained", r and "breakeven" in r, r)
+
+
 def test_suppression():
     ev = {"symbol": "LTC", "stop": 66.94, "price": 71.90}
     now = 1_000_000.0
@@ -238,6 +305,9 @@ def test_config_is_loadable():
         check(f"{p['symbol']} spread is a plausible percent",
               0 < float(p["spread_pct"]) < 5, p["spread_pct"])
         check(f"{p['symbol']} quantity is positive", float(p["qty"]) > 0)
+        check(f"{p['symbol']} routing is a known value",
+              p.get("routing") in ("exchange", "market_maker", "unknown"),
+              p.get("routing"))
 
 
 def test_no_trading_surface():

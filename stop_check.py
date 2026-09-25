@@ -22,9 +22,17 @@ drawdown over the recent sample, floored and capped. If the coin is in a
 violent intraday move, the width widens instead of tightening - a stop is live
 24 hours a day, and on a running coin the daytime swings dwarf the overnight
 ones.
+
+Breakeven floor (added 2026-09-25, Kyle's rule): once the live stop already
+sits at or above breakeven, the script never recommends moving it back below
+breakeven. Breakeven is average cost grossed up for what a sale costs, so a
+stop at the floor exits flat rather than at a small loss. Before the stop has
+reached breakeven the floor does nothing - forcing a stop up to cost while the
+price is only a few percent above it would put the stop inside ordinary noise.
 """
 
 import json
+import math
 import os
 import statistics
 import urllib.request
@@ -78,6 +86,19 @@ MOVED_PCT = 1.0
 TOO_CLOSE_PCT = 1.5
 
 MIN_NIGHTS = 5
+
+# Breakeven floor. Once the live stop is at or above breakeven, never
+# recommend a stop below breakeven.
+BREAKEVEN_FLOOR = True
+# What a sale costs on top of the fill, by routing:
+#   exchange      - itemized taker fee, charged on the sale notional. 0.95% is
+#                   the $0-10K 30-day volume tier; it falls as volume rises.
+#   market_maker  - no itemized fee; the spread is already in the fill price,
+#                   and fills land at about the stop price.
+#   unknown       - treated as exchange, the more conservative of the two.
+EXCHANGE_TAKER_FEE_PCT = 0.95
+# Fills land a touch under the stop (NEAR 2026-09-17: $3.40 -> $3.3942, 0.17%).
+SLIPPAGE_PCT = 0.2
 
 
 def log(msg):
@@ -255,6 +276,32 @@ def stop_price(price, room_pct, spread_pct, decimals):
     return round(raw, decimals)
 
 
+def sell_cost_pct(pos):
+    """Percent of the sale lost to fees and slippage, for this position."""
+    if pos.get("sell_fee_pct") is not None:
+        fee = float(pos["sell_fee_pct"])
+    elif pos.get("routing") == "market_maker":
+        fee = 0.0
+    else:
+        fee = EXCHANGE_TAKER_FEE_PCT
+    return fee + SLIPPAGE_PCT
+
+
+def breakeven_stop(pos, decimals):
+    """The lowest stop price that still exits at or above average cost.
+
+    Rounded UP, so rounding can never be what turns a flat exit into a loss.
+    """
+    raw = float(pos["avg_cost"]) / (1 - sell_cost_pct(pos) / 100.0)
+    scale = 10 ** decimals
+    return math.ceil(round(raw * scale, 6)) / scale
+
+
+def lock_price(breakeven, room_pct, spread_pct):
+    """Market price at which the measured stop first reaches breakeven."""
+    return breakeven / ((1 - room_pct / 100.0) * (1 - spread_pct / 100.0))
+
+
 def fmt(value, decimals):
     return f"{value:,.{decimals}f}"
 
@@ -269,12 +316,24 @@ def evaluate(pos, price, candles):
     running, cur_range, typ_range = intraday_regime(candles)
     room, reason = recommend_room(p95, running, pos.get("room_override_pct"))
     decimals = int(pos.get("decimals", 4))
-    stop = stop_price(price, room, float(pos["spread_pct"]), decimals)
+    spread = float(pos["spread_pct"])
+    measured = stop_price(price, room, spread, decimals)
+    breakeven = breakeven_stop(pos, decimals)
+    live = pos.get("current_stop")
+    # Locked = the stop he actually has entered already protects breakeven.
+    locked = BREAKEVEN_FLOOR and live is not None and float(live) >= breakeven
+    floored = locked and measured < breakeven
+    stop = breakeven if floored else measured
     qty = float(pos["qty"])
     return {
         "symbol": pos["symbol"],
         "price": price,
         "stop": stop,
+        "measured_stop": measured,
+        "breakeven": breakeven,
+        "locked": locked,
+        "floored": floored,
+        "lock_price": lock_price(breakeven, room, spread),
         "room": room,
         "reason": reason,
         "risk": qty * (price - stop),
@@ -297,6 +356,9 @@ def alert_reason(ev, overnight):
     if live is None:
         return "no stop set"
     if live >= price * (1 - TOO_CLOSE_PCT / 100.0):
+        if ev.get("floored"):
+            return ("price is back near breakeven - the floor is doing its "
+                    "job; this stop exits flat if it fires")
         return "live stop is at/above the market - it will fire"
     drift = abs(stop - live) / price * 100.0
     bar = OVERNIGHT_DRIFT_PCT if overnight else DRIFT_PCT
@@ -356,6 +418,17 @@ def describe(ev, why):
         detail += f" (live: ${fmt(live, d)})"
     lines.append(detail)
     lines.append(f"  risk ${ev['risk']:,.0f} | {ev['vs_cost']:+.1f}% vs cost")
+    if ev.get("floored"):
+        lines.append(f"  FLOORED at breakeven ${fmt(ev['breakeven'], d)} - "
+                     f"measured room alone says ${fmt(ev['measured_stop'], d)}. "
+                     f"Tighter than the noise, on purpose: a dip takes you "
+                     f"out flat.")
+    elif ev.get("locked"):
+        lines.append(f"  breakeven ${fmt(ev['breakeven'], d)} is locked in")
+    elif "breakeven" in ev:
+        lines.append(f"  breakeven ${fmt(ev['breakeven'], d)} - locks in once "
+                     f"price reaches ~${fmt(ev['lock_price'], d)} and you "
+                     f"raise the stop")
     if ev["running"]:
         lines.append(f"  MID-MOVE: last 6h ranged {ev['range_6h']:.1f}% "
                      f"vs {ev['typical_6h']:.1f}% typical")
@@ -403,6 +476,7 @@ def main():
         log(f"  {ev['symbol']}: ${fmt(price, ev['decimals'])} "
             f"-> ${fmt(ev['stop'], ev['decimals'])} "
             f"({ev['room']:.1f}% room){' RUNNING' if ev['running'] else ''}"
+            f"{' FLOORED' if ev['floored'] else ' locked' if ev['locked'] else ''}"
             f"{' | ' + why if why else ''}")
         if why and (force or not suppressed(ev, state, now_ts)):
             to_alert.append((ev, why))
