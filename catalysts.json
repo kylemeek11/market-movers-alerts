@@ -1,0 +1,78 @@
+{
+  "_comment": [
+    "The read-through map. This is the part no API gives you and the only part",
+    "that is real edge: which small company re-rates on someone ELSE's readout.",
+    "Built by reading the small company's own transcripts and slides, where they",
+    "name their competitors and their catalysts.",
+    "",
+    "direction: 'up'   = this readout succeeding is good for this ticker",
+    "           'down' = this readout succeeding is bad for this ticker",
+    "           'own'  = it is this company's own trial (both directions live)",
+    "",
+    "Trials are keyed by NCT ID, never by drug name. BRUNELLO is filed under",
+    "'EyeBiotech Ltd.' with the intervention named 'EYE103' - not Merck, not",
+    "MK-3000, not remigromig. Name matching would have missed it entirely."
+  ],
+
+  "clusters": [
+    {
+      "name": "Retina / Wnt pathway",
+      "discovery": {
+        "conditions": [
+          "diabetic macular edema",
+          "age-related macular degeneration",
+          "retinal vein occlusion",
+          "diabetic retinopathy"
+        ],
+        "phases": ["PHASE2", "PHASE3"],
+        "min_enrollment": 100
+      },
+      "names": [
+        {
+          "ticker": "SRZN",
+          "cik": "0001824893",
+          "note": "Surrozen. SZN-8141 = Wnt agonist + VEGF antagonist for DME. The pure-play on Wnt working in the retina: 4.6M float, ~31% of it short as of 2026-09-24.",
+          "levered_to": [
+            {
+              "nct": "NCT06571045",
+              "direction": "up",
+              "why": "Merck/EyeBio Wnt agonist vs ranibizumab in DME. First pivotal test of the mechanism Surrozen's whole pipeline depends on. Read out 2026-09-24: met primary endpoint, SRZN +108%. Year-2 data still to come."
+            }
+          ]
+        },
+        {
+          "ticker": "MRK",
+          "cik": "0000310158",
+          "note": "Merck. Sponsor of BRUNELLO via EyeBiotech. Owns the catalyst but is far too large for it to move the stock - it is here so the trial is tracked, not because MRK is tradeable on it.",
+          "levered_to": [
+            { "nct": "NCT06571045", "direction": "own", "why": "Sponsor." }
+          ]
+        },
+        {
+          "ticker": "REGN",
+          "cik": "0000872589",
+          "note": "Regeneron. Eylea / Eylea HD incumbent. A new mechanism reaching non-inferiority against anti-VEGF is a franchise threat, not a win.",
+          "levered_to": [
+            { "nct": "NCT06571045", "direction": "down", "why": "Wnt success erodes the anti-VEGF standard of care." }
+          ]
+        },
+        {
+          "ticker": "OCUL",
+          "cik": "0001393434",
+          "note": "Ocular Therapeutix. OTX-TKI (axitinib implant), Phase 3, n=825, primary completion estimated 2027-01-08. Surfaced by the discovery pass, not hand-added - its own binary event, small cap.",
+          "levered_to": [
+            { "nct": "NCT06495918", "direction": "own", "why": "Own Phase 3 readout." }
+          ]
+        }
+      ]
+    }
+  ],
+
+  "settings": {
+    "weekly_window_days": 45,
+    "squeeze_float_max": 15000000,
+    "squeeze_short_pct_min": 15.0,
+    "edgar_forms_watched": ["8-K", "424B5", "S-1", "S-3", "SC 13D", "SC 13D/A"],
+    "edgar_urgent_items": ["8.01", "7.01", "1.01", "2.02", "5.02"]
+  }
+}
