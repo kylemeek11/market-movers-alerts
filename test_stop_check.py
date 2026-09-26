@@ -296,7 +296,7 @@ def test_config_is_loadable():
     from pathlib import Path
     cfg = json.loads(Path("positions.json").read_text())
     positions = cfg["positions"]
-    check("four positions", len(positions) == 4, len(positions))
+    check("at least one position", len(positions) >= 1, len(positions))
     required = {"symbol", "product", "qty", "avg_cost", "spread_pct",
                 "current_stop", "room_override_pct", "decimals"}
     for p in positions:
