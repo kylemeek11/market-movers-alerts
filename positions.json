@@ -8,9 +8,9 @@
       "qty": 525,
       "avg_cost": 67.21,
       "spread_pct": 0.96,
-      "current_stop": 66.59,
+      "current_stop": 68.47,
       "room_override_pct": null,
-      "routing": "unknown",
+      "routing": "exchange",
       "decimals": 2
     },
     {
