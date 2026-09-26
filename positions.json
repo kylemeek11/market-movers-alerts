@@ -8,7 +8,7 @@
       "qty": 525,
       "avg_cost": 67.21,
       "spread_pct": 0.96,
-      "current_stop": 68.47,
+      "current_stop": 68.00,
       "room_override_pct": null,
       "routing": "exchange",
       "decimals": 2
@@ -30,7 +30,7 @@
       "qty": 5000,
       "avg_cost": 2.06687,
       "spread_pct": 0.98,
-      "current_stop": 1.85407,
+      "current_stop": 1.80791,
       "room_override_pct": null,
       "routing": "market_maker",
       "decimals": 5
@@ -41,10 +41,21 @@
       "qty": 100000000,
       "avg_cost": 0.00000892,
       "spread_pct": 0.93,
-      "current_stop": 0.00000520,
+      "current_stop": 0.00000519,
       "room_override_pct": 12,
-      "routing": "unknown",
+      "routing": "exchange",
       "decimals": 8
+    },
+    {
+      "symbol": "WLD",
+      "product": "WLD-USD",
+      "qty": 2000,
+      "avg_cost": 0.50954,
+      "spread_pct": 0.95,
+      "current_stop": 0.47693,
+      "room_override_pct": null,
+      "routing": "exchange",
+      "decimals": 5
     }
   ]
 }
