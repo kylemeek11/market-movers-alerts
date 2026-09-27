@@ -623,6 +623,71 @@ check("rate alert body carries the first-buzz line", "1st alert today" in body, 
 check("...and the days-running line", "still running: day 4 of alerts (first Thu)" in body, body)
 check("the old lines are still there", "break-even" in body and "off 24h low" in body)
 
+print("\nAlert tiers: the star, the caution, the priorities")
+check("stop hint is the 15% the 60-day study picked", ab.STOP_HINT_PCT == 15.0, ab.STOP_HINT_PCT)
+be, stop = ab.cost_hints(100.0)
+check("15% stop hint lands 15% under, then under Robinhood's markdown",
+      abs(stop - 100.0 * 0.85 * (1 - ab.EXEC_MARKUP_PCT / 100)) < 1e-9, stop)
+
+def crow(**kw):
+    r = {"kind": "crypto", "symbol": "T", "name": "Test", "price": 1.0, "pct": 2.0,
+         "week_pct": 5.0, "rv_source": "coinbase"}
+    r.update(kw)
+    return r
+
+top, lines = ab.tier_lines(crow(), 6.0, True)
+check("first alert, quiet week, day +2%, 6x Coinbase volume is a TOP SETUP", top and lines[0].startswith("TOP SETUP"), lines)
+check("...with no caution", len(lines) == 1, lines)
+top, lines = ab.tier_lines(crow(), 6.0, False)
+check("a repeat is never a top setup", not top and lines == [], lines)
+top, lines = ab.tier_lines(crow(pct=12.0), 6.0, True)
+check("day +12% is not a top setup", not top, lines)
+top, lines = ab.tier_lines(crow(), 4.9, True)
+check("4.9x volume is not a top setup", not top, lines)
+top, lines = ab.tier_lines(crow(rv_source="coingecko"), 9.0, True)
+check("the star needs Coinbase-confirmed volume", not top, lines)
+top, lines = ab.tier_lines(crow(week_pct=57.0), 6.0, True)
+check("a hot week gets the caution even on a top setup", top and any(l.startswith("caution") for l in lines), lines)
+top, lines = ab.tier_lines(crow(week_pct=19.9), 2.6, False)
+check("just under the week bar: no caution", lines == [], lines)
+top, lines = ab.tier_lines(crow(week_pct=None), 2.6, False)
+check("no week figure: no caution, no crash", lines == [], lines)
+top, lines = ab.tier_lines({"kind": "stock", "symbol": "S", "pct": 3.0, "week_pct": 30.0}, 6.0, True)
+check("stocks get the caution but never the star", not top and len(lines) == 1, lines)
+
+# The whole thing through send_rate: title, tag, priority.
+sent = []
+real_push = ab.push
+ab.push = lambda title, message, **k: sent.append((title, message, k.get("priority"), k.get("tags")))
+try:
+    st = {"alerts_today": {}, "streak": {}}
+    r1 = {"kind": "crypto", "symbol": "GRT", "name": "The Graph", "price": 0.0295, "pct": 6.3,
+          "week_pct": 8.0, "low_24h": 0.0271, "rv_source": "coinbase"}
+    ab.send_rate([("rate:crypto:GRT", r1, 3.9, 71.0, 6.2)], {}, noon, False, state=st)
+    ab.send_rate([("rate:crypto:GRT", dict(r1), 4.8, 71.0, 6.0)], {}, noon + 3600, False, state=st)
+    r2 = {"kind": "crypto", "symbol": "QNT", "name": "Quant", "price": 168.6, "pct": 57.6,
+          "week_pct": 130.0, "low_24h": 109.0, "rv_source": "coinbase"}
+    ab.send_rate([("rate:crypto:QNT", r2, 5.9, 69.0, 3.2)], {}, noon, False, state=st)
+    ab.send_rate([("rate:crypto:QNT", dict(r2), 5.9, 69.0, 3.2)], {}, noon - 6 * 3600, True, state={"alerts_today": {}, "streak": {}})
+finally:
+    ab.push = real_push
+t1, b1, p1, g1 = sent[0]
+check("first GRT alert is a starred top setup at high priority", t1.startswith("* GRT") and p1 == "high" and g1 == "star", (t1, p1, g1))
+check("...and the body says so and quotes a 15% stop", "TOP SETUP" in b1 and "15% stop" in b1, b1)
+t2, b2, p2, g2 = sent[1]
+check("the repeat an hour later is unstarred and quieter", not t2.startswith("*") and p2 == "default" and "alert #2 today" in b2, (t2, p2, b2))
+t3, b3, p3, g3 = sent[2]
+check("Quant up 130% on the week carries the caution, no star", "caution: already up 130% on the week" in b3 and not t3.startswith("*") and p3 == "high", (t3, p3, b3))
+t4, b4, p4, g4 = sent[3]
+check("overnight still goes out at max priority", p4 == "max", p4)
+
+# The 7d figure has to come through the screener.
+rows7 = with_urlopen([dict(coins[1], price_change_percentage_7d_in_currency=34.5)], lambda: ab.screen_crypto(None))
+check("screen_crypto carries the week change", rows7 and rows7[0].get("week_pct") == 34.5, rows7 and rows7[0].get("week_pct"))
+check("...and asks CoinGecko for it", "7d" in ab.COINGECKO_URL, ab.COINGECKO_URL)
+rows_none = with_urlopen([dict(coins[1])], lambda: ab.screen_crypto(None))
+check("a missing week figure is None, not a crash", rows_none and rows_none[0].get("week_pct") is None)
+
 print()
 if FAILURES:
     print(f"{len(FAILURES)} FAILED: {FAILURES}")

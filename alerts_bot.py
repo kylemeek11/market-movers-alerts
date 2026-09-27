@@ -276,7 +276,33 @@ OVERNIGHT_RATE_PCT = 4.0
 #     $3.3942 against a $3.40 stop when the market's lowest print was $3.4144
 #     - the market never reached the stop. Set the stop wider to compensate.
 EXEC_MARKUP_PCT = 0.94
-STOP_HINT_PCT = 10.0                   # the stop size the hint is sized for
+# STOP HINT WIDENED 10 -> 15 on 2026-09-27. Sixty days of hourly Coinbase data,
+# 81 Robinhood-tradable coins, every fire of the live rule (578 alerts, each
+# followed for a week, costs included), trailing stop from the alert price:
+#     width   all alerts        first alert of the day
+#     10%     +1.0% (38% won)   +1.7% (40% won)
+#     15%     +4.0% (46%)       +5.0% (49%)
+#     20%     +5.6%             +7.1%
+# The wider stop wins because the tail pays: a 10% trail was shaken out of
+# 39% of the +40% runs within a day of the entry, 15% out of 24%. Quant this
+# week: 10% trail from the Thursday alert exited Friday +9%; 15% held to
+# Sunday, +90%. In the calmer first half of the sample 10% and 15% tied;
+# in the trending second half 15% won by five points. This is the hint for a
+# NEW entry; stop_check.py still manages open positions on measured noise.
+STOP_HINT_PCT = 15.0                   # the stop size the hint is sized for
+
+# ALERT TIERS (2026-09-27), same 60-day study, first alert of the day only:
+#     coin up <10% on the day AND volume >= 5x normal   +6.8% (10% trail), +11.1% (15%), 64% won, ~2/day
+#     ...held in both 30-day halves (+6.6% / +7.0% at 10%)
+#     coin up 20%+ on the WEEK (any alert)               -2.2% (10%), -3.2% (15%), 29% won
+#     volume 2.5-5x, day <10%                           -1.3% (10%), +3.9% (15%)
+# So a first alert on a quiet-week coin with heavy volume gets a star, and a
+# coin that has already had its week gets a caution. The monsters (Quant +273%,
+# USELESS +188%) DID come from the hot-week bucket - the caution is a statement
+# about the average, not a ban, and the tags leave the decision on the phone.
+TOP_TIER_MAX_DAY_PCT = 10.0
+TOP_TIER_MIN_RELVOL = 5.0
+CAUTION_WEEK_PCT = 20.0
 
 MARKET_TZ = "America/New_York"
 MARKET_OPEN_HOUR = 8
@@ -301,7 +327,7 @@ NTFY_SERVER = os.environ.get("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
 COINGECKO_URL = (
     "https://api.coingecko.com/api/v3/coins/markets"
     "?vs_currency=usd&order=market_cap_desc"
-    f"&per_page={CRYPTO_TOP_N}&page=1&price_change_percentage=1h,24h"
+    f"&per_page={CRYPTO_TOP_N}&page=1&price_change_percentage=1h,24h,7d"
 )
 
 
@@ -581,6 +607,9 @@ def screen_crypto(allowed=None):
             "price": float(price),
             "dollars": float(vol),
             "hour_pct": hour,
+            # The week behind it. Alerts on coins already up 20%+ on the week
+            # averaged a LOSS over 60 days (see CAUTION_WEEK_PCT).
+            "week_pct": c.get("price_change_percentage_7d_in_currency"),
             # Run maturity. The median crypto run is +10.9% end to end, so a
             # coin already well off its 24h low is late, not early.
             "low_24h": c.get("low_24h"),
@@ -1103,6 +1132,36 @@ def too_broad(pending, rows):
     return len(pending) > max(3, int(RATE_BREADTH_MAX * len(rows)))
 
 
+def alerts_so_far_today(state, key, now_ts):
+    """How many rate alerts this name has already had today (Central day)."""
+    if state is None:
+        return 0
+    today = local_date(now_ts)
+    times = (state.get("alerts_today") or {}).get(key) or []
+    return sum(1 for t in times if isinstance(t, (int, float)) and local_date(t) == today)
+
+
+def tier_lines(r, rv, first):
+    """The star or the caution, from the 60-day study (see TOP_TIER_*).
+
+    Returns (top, lines). The star needs a Coinbase-confirmed volume figure,
+    because that is the tape the numbers were measured on.
+    """
+    lines, top = [], False
+    week = r.get("week_pct")
+    day = r.get("pct")
+    if (first and r.get("kind") == "crypto" and r.get("rv_source") == "coinbase"
+            and day is not None and day < TOP_TIER_MAX_DAY_PCT
+            and rv is not None and rv >= TOP_TIER_MIN_RELVOL):
+        top = True
+        lines.append(f"TOP SETUP - day still under {TOP_TIER_MAX_DAY_PCT:.0f}%, {rv:.0f}x volume: "
+                     f"these averaged +11% under a 15% stop")
+    if week is not None and week >= CAUTION_WEEK_PCT:
+        lines.append(f"caution: already up {week:.0f}% on the week - alerts like "
+                     f"this averaged a loss (the rare monster excepted)")
+    return top, lines
+
+
 def tag_lines(state, key, now_ts, count_today=True):
     """The '1st alert today' and 'still running: day N' lines for one name.
 
@@ -1152,22 +1211,38 @@ def send_rate(pending, fired, now_ts, overnight, night_bar=OVERNIGHT_RATE_PCT,
 
         # First buzz or a repeat, and whether this name has been at it for
         # days. The replay says these matter more than the volume multiple.
-        lines.extend(tag_lines(state, f"{r['kind']}:{r['symbol']}", now_ts))
+        key = f"{r['kind']}:{r['symbol']}"
+        first = alerts_so_far_today(state, key, now_ts) == 0
+        lines.extend(tag_lines(state, key, now_ts))
+        top, tiers = tier_lines(r, rv, first)
+        lines.extend(tiers)
 
         if r["kind"] == "crypto":
             breakeven, stop = cost_hints(r["price"])
             lines.append(f"break-even {money(breakeven)}  -  "
                          f"{STOP_HINT_PCT:.0f}% stop {money(stop)}")
 
-        push(f"{r['symbol']} +{move:.1f}% in {elapsed_min:.0f} min",
+        # Repeats averaged a loss in the study, so they buzz at the quieter
+        # priority; a first alert stays high and a top setup carries a star.
+        if overnight:
+            priority = "max"
+        elif not first:
+            priority = "default"
+        else:
+            priority = "high"
+        title = f"{r['symbol']} +{move:.1f}% in {elapsed_min:.0f} min"
+        if top:
+            title = "* " + title
+        push(title,
              "\n".join(lines),
-             priority="max" if overnight else "high",
-             tags="zap",
+             priority=priority,
+             tags="star" if top else "zap",
              click=robinhood_url(r))
         src = r.get("rv_source")
         log(f"  RATE {r['symbol']} +{move:.1f}% over {elapsed_min:.0f}min "
             f"on {rv:.1f}x volume{' (' + src + ')' if src else ''} "
-            f"(day {r['pct']:+.1f}%)")
+            f"(day {r['pct']:+.1f}%)"
+            f"{' TOP' if top else ''}{'' if first else ' repeat'}")
     if held:
         log(f"  {held} rate signals held until morning")
 
@@ -1237,6 +1312,9 @@ def send_alerts(pending, fired, high_level, overnight, state=None):
         extra = tag_lines(state, f"{r['kind']}:{r['symbol']}",
                           datetime.now(timezone.utc).timestamp(),
                           count_today=False)
+        # A threshold alert is late-stage by definition; still say so when the
+        # whole week is already in the price.
+        extra += tier_lines(r, None, False)[1]
         if extra:
             body += "\n" + "\n".join(extra)
         push(f"{r['symbol']} crossed +{level:.0f}%",
