@@ -30,7 +30,7 @@
       "qty": 5000,
       "avg_cost": 2.06687,
       "spread_pct": 0.98,
-      "current_stop": 2.00416,
+      "current_stop": 1.95283,
       "room_override_pct": null,
       "routing": "market_maker",
       "decimals": 5
