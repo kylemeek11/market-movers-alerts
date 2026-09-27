@@ -555,6 +555,21 @@ check("...and keeps counting", lines and lines[0].startswith("alert #3 today"), 
 check("a day-1 name carries no streak line", len(lines) == 1, lines)
 check("no state means no lines and no crash", ab.tag_lines(None, "crypto:QNT", noon) == [])
 
+# "Today" is Kyle's calendar day. The bot's state resets at midnight UTC,
+# which is 7pm Central, so the send log is carried across that reset and the
+# count filters by Central date instead.
+st = {"alerts_today": {"crypto:QNT": [noon - 20 * 3600]}, "streak": {}}   # 4pm yesterday CT
+lines = ab.tag_lines(st, "crypto:QNT", noon)
+check("yesterday evening's alert does not count toward today", lines[0] == "1st alert today", lines)
+evening = datetime(2026, 9, 28, 1, 30, tzinfo=timezone.utc).timestamp()     # 8:30pm CT 09-27, new UTC day
+st = {"alerts_today": {"crypto:QNT": [noon]}, "streak": {}}
+lines = ab.tag_lines(st, "crypto:QNT", evening)
+check("an alert after 7pm CT still counts the afternoon one",
+      lines[0] == "alert #2 today (first 12:00pm)", lines)
+pruned = ab.prune_alert_log({"a": [noon - 40 * 3600, noon - 3600], "b": [noon - 50 * 3600], "c": "junk"}, noon)
+check("old stamps and empty names are pruned from the send log",
+      pruned == {"a": [noon - 3600]}, pruned)
+
 # Days running, in Central days. Three alerts on one day are one day.
 streak = {}
 check("first day", ab.note_streak(streak, "crypto:QNT", "2026-09-24") == 1)
@@ -575,7 +590,9 @@ check("old and broken entries are pruned, recent ones kept", list(kept) == ["b"]
 # The memory must survive the daily reset that wipes everything else.
 import tempfile, os
 tmp = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+recent = datetime.now(timezone.utc).timestamp() - 3600
 json.dump({"date": "2000-01-01", "fired": {"x": 1}, "marks": {"m": []},
+           "alerts_today": {"crypto:QNT": [recent, recent - 90 * 3600]},
            "streak": {"crypto:QNT": {"first": ab.local_date(), "last": ab.local_date(), "days": 2}}}, tmp)
 tmp.close()
 saved_path = ab.STATE_FILE
@@ -588,6 +605,7 @@ finally:
 check("a new day starts with empty fired/marks", fresh["fired"] == {} and fresh["marks"] == {})
 check("...but keeps the days-running memory", fresh["streak"].get("crypto:QNT", {}).get("days") == 2, fresh["streak"])
 check("and has the new buckets", "alerts_today" in fresh and "cb_missing" in fresh)
+check("...and the recent send log, minus stale stamps", fresh["alerts_today"] == {"crypto:QNT": [recent]}, fresh["alerts_today"])
 
 # End to end: the lines reach the notification body.
 sent = []

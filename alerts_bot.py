@@ -596,11 +596,14 @@ def screen_crypto(allowed=None):
 
 # --- State ------------------------------------------------------------------
 
-def fresh_state(today, streak=None):
+def fresh_state(today, streak=None, alerts_today=None):
     return {"date": today, "fired": {}, "tradable": {}, "marks": {},
             "rh_symbols": None, "gate": GATE_VERSION,
             "cb_missing": {},          # coins Coinbase has no USD market for
-            "alerts_today": {},        # name -> [send timestamps] for rate alerts
+            # name -> [send timestamps] for rate alerts. Carried across the
+            # midnight-UTC reset (7pm Central) so "today" in the alert means
+            # Kyle's day, not GitHub's; alert_count_line filters by local date.
+            "alerts_today": alerts_today or {},
             "streak": streak or {}}    # name -> {first, last, days}; survives the reset
 
 
@@ -622,7 +625,8 @@ def load_state():
             return state
         log("  state is from a previous day - starting fresh")
         # The multi-day memory is the one thing that must outlive the reset.
-        return fresh_state(today, prune_streak(state.get("streak") or {}))
+        return fresh_state(today, prune_streak(state.get("streak") or {}),
+                           prune_alert_log(state.get("alerts_today") or {}))
     except (OSError, ValueError):
         log("  no previous state found")
     return fresh_state(today)
@@ -705,8 +709,26 @@ def streak_line(days, first):
     return f"still running: day {days} of alerts (first {weekday})"
 
 
+def prune_alert_log(log_map, now_ts=None, keep_sec=36 * 3600):
+    """Drop send timestamps older than a day and a half, and empty names."""
+    now_ts = now_ts if now_ts is not None else datetime.now(timezone.utc).timestamp()
+    out = {}
+    for key, times in (log_map or {}).items():
+        kept = [t for t in (times or []) if isinstance(t, (int, float))
+                and now_ts - t <= keep_sec]
+        if kept:
+            out[key] = kept
+    return out
+
+
 def alert_count_line(times, now_ts):
-    """'1st alert today' or 'alert #3 today (first 9:37am)', from the send log."""
+    """'1st alert today' or 'alert #3 today (first 9:37am)', from the send log.
+
+    "Today" is the Central calendar day of `now_ts`; stamps from yesterday
+    evening do not count even though they share a UTC date.
+    """
+    today = local_date(now_ts)
+    times = [t for t in times if local_date(t) == today]
     n = len(times)
     if n <= 1:
         return "1st alert today"
