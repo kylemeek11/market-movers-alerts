@@ -1,0 +1,12 @@
+{
+  "_note": "Coins watched more closely than the general screen. Each gets an early-climb alert at a 2% bar (general: 3%) and a 'dip turning up' alert when it is dip_pct below its 7-day high and has bounced turn_pct off its 12-hour low. Leave dip_pct / turn_pct out to use the defaults (8 and 2). Remove a coin by deleting its line. Added 2026-09-27 from the October catalyst research.",
+  "coins": [
+    {"symbol": "ETH",  "why": "Glamsterdam testnet Oct 6, Devcon Nov 3-6"},
+    {"symbol": "LINK", "why": "tokenization leader, +12% on 2026-09-25"},
+    {"symbol": "ONDO", "why": "tokenized-assets leader, +32% on 2026-09-25"},
+    {"symbol": "LDO",  "why": "ETH staking, +20% on 2026-09-25"},
+    {"symbol": "XRP",  "why": "XRP Ledger batch amendment targeted Oct 9"},
+    {"symbol": "SOL",  "why": "Breakpoint Nov 15-17"},
+    {"symbol": "BTC",  "why": "October seasonality (median +12.5%)"}
+  ]
+}

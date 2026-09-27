@@ -991,6 +991,50 @@ def send_alerts(pending, fired, high_level, overnight):
         log(f"  {extra} queued for the next run")
 
 
+def send_dip(coin, st, price):
+    breakeven, stop = cost_hints(price)
+    row = {"kind": "crypto", "symbol": coin["symbol"]}
+    body = "\n".join([
+        f"{coin['symbol']}  -  {money(price)}",
+        f"{st['off_high']:.1f}% below 7-day high {money(st['high'])}",
+        f"+{st['off_low']:.1f}% off 12h low {money(st['low'])} - turning up",
+        f"break-even {money(breakeven)}  -  "
+        f"{STOP_HINT_PCT:.0f}% stop {money(stop)}",
+        f"watching because: {coin['why']}" if coin.get("why") else "",
+    ]).strip()
+    push(f"{coin['symbol']} dip turning up ({st['off_high']:.0f}% off high)",
+         body, priority="high", tags="arrow_heading_up",
+         click=robinhood_url(row))
+    log(f"  DIP {coin['symbol']} {st['off_high']:.1f}% off 7d high, "
+        f"+{st['off_low']:.1f}% off 12h low")
+
+
+def run_watchlist(crypto_rows, marks, fired, now_ts, overnight):
+    """Closer scrutiny for the coins in watchlist.json. Never fatal."""
+    try:
+        import watchlist as wl
+        coins = wl.load_watchlist()
+        if not coins:
+            return
+        rows = wl.watch_rows(crypto_rows, coins)
+        missing = {c["symbol"] for c in coins} - {r["symbol"] for r in rows}
+        if missing:
+            log(f"  watchlist: not in the tradable universe: "
+                f"{', '.join(sorted(missing))}")
+        # Early climb at the lower bar. Same cooldown key as the ordinary
+        # rate signal, so a coin the 3% bar already sent is skipped here.
+        early, _, _ = collect_rate(rows, marks, fired, now_ts,
+                                   wl.WATCH_RATE_PCT)
+        if early:
+            log(f"  watchlist: {len(early)} early climbs at "
+                f"{wl.WATCH_RATE_PCT:g}%")
+        send_rate(early, fired, now_ts, overnight)
+        wl.check_dips(coins, {r["symbol"]: r["price"] for r in rows},
+                      fired, now_ts, overnight, send_dip, log=log)
+    except Exception as exc:
+        log(f"  watchlist failed ({exc}) - main alerts unaffected")
+
+
 # ---------------------------------------------------------------------------
 
 def main():
@@ -1042,6 +1086,7 @@ def main():
             + (f" ({dropped} dropped - not on Robinhood)" if dropped else ""))
     send_rate(crate, fired, now_ts, overnight)
     log(rate_bars(crypto_rows, marks, now_ts))
+    run_watchlist(crypto_rows, marks, fired, now_ts, overnight)
 
     crypto_pending = filter_tradable(
         collect_pending(crypto_movers, CRYPTO_ALERT_LEVELS, fired, "crypto"),
