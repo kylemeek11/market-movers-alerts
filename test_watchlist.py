@@ -8,6 +8,10 @@ import tempfile
 import alerts_bot as ab
 import watchlist as wl
 
+# These suites test the price signal and the CoinGecko arithmetic; keep the
+# Coinbase confirmation out of the way so nothing here touches the network.
+ab.coinbase_relvol = lambda *a, **k: None
+
 FAILURES = []
 
 

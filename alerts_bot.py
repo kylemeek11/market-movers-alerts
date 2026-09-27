@@ -12,7 +12,8 @@ clock, so it is screened on every run; overnight the phone's own Do Not
 Disturb does the silencing, and only the biggest movers ask to break through.
 
 Deliberately light: stocks need only the screener's quote payload and crypto
-is one CoinGecko call, so a run finishes in seconds.
+is one CoinGecko call plus a Coinbase candle request for each coin that has
+already cleared the price bar, so a run finishes in seconds.
 """
 
 from __future__ import annotations
@@ -159,6 +160,36 @@ STOCK_RATE_PCT = 3.0            # stocks: same bar
 RATE_MIN_RELVOL = 2.5           # window volume vs the name's own normal pace
 RATE_COOLDOWN_SEC = 45 * 60     # re-alert the same name at most this often
 RATE_MARKS_KEPT = 24            # enough stamps to span the window with drift
+
+# WHERE THE VOLUME FIGURE COMES FROM (2026-09-27). CoinGecko's counter is a
+# GLOBAL 24h total across every exchange, and it is slow to move. Quant on
+# 2026-09-24: Coinbase's own tape ran 3-10x normal from 07:55 CT while the bot
+# logged "coins climbing on ordinary volume" at 07:51, 08:00 and 09:20 and
+# never flagged it; the first QNT alert was the 15% day threshold at 11:23 CT,
+# $84. The same rule replayed on Coinbase volume fires at 07:55 CT at $75.14.
+# So for crypto, once a coin has cleared the PRICE bar, the volume check now
+# comes from Coinbase's 5-minute candles: dollars traded in the window against
+# that coin's own pace for a window that long over the previous 24 hours. Same
+# 2.5x scale as before (the old formula reduces to the same ratio when the
+# counter is fresh). CoinGecko remains the fallback for coins Coinbase does not
+# list and for the shadow counts in rate_bars. Only the handful of coins over
+# the price bar cost a request, so a run stays quick.
+COINBASE_API = "https://api.exchange.coinbase.com"
+COINBASE_VOLUME_CONFIRM = True
+COINBASE_TIMEOUT = 10
+COINBASE_BASELINE_H = 24        # "normal pace" is measured over this long
+COINBASE_MIN_BASELINE_MIN = 6 * 60   # less history than this -> no opinion
+
+# ALERT TAGS (2026-09-27). Replaying the live rule over 79 Robinhood-tradable
+# coins for 4.9 days (307 alerts with a day of outcome), under a 10% trailing
+# stop after costs: the FIRST alert for a coin in 3h averaged +3.0% (47%
+# positive); a repeat within 3h averaged -0.1% (38%); a third or later -0.9%.
+# Repeats touch +5% more often - they are just bought nearer the top. So each
+# rate alert now says whether it is the first buzz today or repeat #N, and a
+# small memory that survives the daily state reset says when the same coin
+# has been alerting for several days running (Quant alerted on 24, 25, 26 and
+# 27 Sep - that persistence was the tell, and no single alert showed it).
+STREAK_KEEP_DAYS = 2            # forget a name this many days after its last alert
 
 # Crypto is highly correlated, so a market-wide lift can light up the whole
 # board at once. Measured over the backtest week, the share of the universe
@@ -565,6 +596,14 @@ def screen_crypto(allowed=None):
 
 # --- State ------------------------------------------------------------------
 
+def fresh_state(today, streak=None):
+    return {"date": today, "fired": {}, "tradable": {}, "marks": {},
+            "rh_symbols": None, "gate": GATE_VERSION,
+            "cb_missing": {},          # coins Coinbase has no USD market for
+            "alerts_today": {},        # name -> [send timestamps] for rate alerts
+            "streak": streak or {}}    # name -> {first, last, days}; survives the reset
+
+
 def load_state():
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     try:
@@ -573,16 +612,20 @@ def load_state():
             state.setdefault("tradable", {})
             state.setdefault("marks", {})
             state.setdefault("rh_symbols", None)
+            state.setdefault("cb_missing", {})
+            state.setdefault("alerts_today", {})
+            state.setdefault("streak", {})
             if state.get("gate") != GATE_VERSION:
                 log("  tradability cache came from an older gate - clearing")
                 state["tradable"] = {}
                 state["gate"] = GATE_VERSION
             return state
         log("  state is from a previous day - starting fresh")
+        # The multi-day memory is the one thing that must outlive the reset.
+        return fresh_state(today, prune_streak(state.get("streak") or {}))
     except (OSError, ValueError):
         log("  no previous state found")
-    return {"date": today, "fired": {}, "tradable": {}, "marks": {},
-            "rh_symbols": None, "gate": GATE_VERSION}
+    return fresh_state(today)
 
 
 def save_state(state):
@@ -591,6 +634,90 @@ def save_state(state):
         STATE_FILE.write_text(json.dumps(state, indent=1))
     except OSError as exc:
         log(f"  could not save state: {exc}")
+
+
+# --- Multi-day memory --------------------------------------------------------
+# Counted in Kyle's own calendar days, not UTC ones, so "day 3" means what he
+# would mean by it. The rest of the state resets at midnight UTC (7pm CT);
+# this map is carried across that reset by load_state.
+
+def local_date(ts=None):
+    """YYYY-MM-DD in USER_TZ; falls back to UTC if the zone is unavailable."""
+    when = (datetime.fromtimestamp(ts, tz=timezone.utc) if ts is not None
+            else datetime.now(timezone.utc))
+    try:
+        from zoneinfo import ZoneInfo
+        when = when.astimezone(ZoneInfo(USER_TZ))
+    except Exception:
+        pass
+    return when.strftime("%Y-%m-%d")
+
+
+def _days_between(a, b):
+    """Calendar days from date string a to date string b."""
+    return (datetime.strptime(b, "%Y-%m-%d") - datetime.strptime(a, "%Y-%m-%d")).days
+
+
+def prune_streak(streak, today=None):
+    """Drop names that have gone quiet, so the memory never grows."""
+    today = today or local_date()
+    out = {}
+    for key, s in (streak or {}).items():
+        try:
+            if _days_between(s["last"], today) <= STREAK_KEEP_DAYS:
+                out[key] = s
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
+def note_streak(streak, key, today=None):
+    """Record an alert for `key` today; return how many days running it has alerted.
+
+    A gap of a day ends the streak. Called once per alert, but idempotent
+    within a day, so repeats do not inflate the count.
+    """
+    today = today or local_date()
+    s = streak.get(key)
+    if s:
+        try:
+            gap = _days_between(s["last"], today)
+        except (KeyError, TypeError, ValueError):
+            gap = None
+        if gap == 0:
+            return int(s.get("days", 1))
+        if gap == 1:
+            s["last"] = today
+            s["days"] = int(s.get("days", 1)) + 1
+            return s["days"]
+    streak[key] = {"first": today, "last": today, "days": 1}
+    return 1
+
+
+def streak_line(days, first):
+    """The body line for a name that has alerted several days running."""
+    if days < 2:
+        return None
+    try:
+        weekday = datetime.strptime(first, "%Y-%m-%d").strftime("%a")
+    except (TypeError, ValueError):
+        weekday = first
+    return f"still running: day {days} of alerts (first {weekday})"
+
+
+def alert_count_line(times, now_ts):
+    """'1st alert today' or 'alert #3 today (first 9:37am)', from the send log."""
+    n = len(times)
+    if n <= 1:
+        return "1st alert today"
+    first = datetime.fromtimestamp(min(times), tz=timezone.utc)
+    try:
+        from zoneinfo import ZoneInfo
+        first = first.astimezone(ZoneInfo(USER_TZ))
+    except Exception:
+        pass
+    stamp = first.strftime("%I:%M%p").lstrip("0").lower()
+    return f"alert #{n} today (first {stamp})"
 
 
 # --- Alerting ---------------------------------------------------------------
@@ -793,13 +920,88 @@ def relative_volume(row, mark):
     return delta / normal
 
 
-def collect_rate(rows, marks, fired, now_ts, pct):
+def relvol_from_candles(candles, minutes, now_ts):
+    """Window dollar volume against this coin's own pace, from 5-minute candles.
+
+    `candles` are Coinbase rows [time, low, high, open, close, volume], any
+    order. The window is the last `minutes`; "normal" is the average for a
+    window that long over the COINBASE_BASELINE_H before it. Coinbase omits
+    empty candles, so the baseline is measured by time span, not by count -
+    a quiet coin's missing candles are zeros, not gaps. None when there is
+    not enough history to have an opinion.
+    """
+    if not candles or not minutes or minutes <= 0:
+        return None
+    win_start = now_ts - minutes * 60.0
+    base_start = win_start - COINBASE_BASELINE_H * 3600.0
+    win = base = 0.0
+    oldest = None
+    for c in candles:
+        try:
+            t, close, vol = int(c[0]), float(c[4]), float(c[5])
+        except (TypeError, ValueError, IndexError):
+            continue
+        dollars = close * vol
+        if t >= win_start:
+            win += dollars
+        elif t >= base_start:
+            base += dollars
+            oldest = t if oldest is None else min(oldest, t)
+    if oldest is None:
+        return None
+    base_minutes = (win_start - oldest) / 60.0 + 5.0
+    if base_minutes < COINBASE_MIN_BASELINE_MIN:
+        return None
+    normal = base * (minutes / base_minutes)
+    if normal <= 0:
+        return None
+    return win / normal
+
+
+def coinbase_relvol(symbol, minutes, now_ts, missing=None):
+    """Relative volume for the last `minutes` from Coinbase's own tape, or None.
+
+    None means "no opinion" - Coinbase has no USD market for the coin, the
+    call failed, or there is too little history - and the caller falls back
+    to the CoinGecko figure. A 404 is remembered in `missing` for the day so
+    a coin that is not on Coinbase costs one request, not one per run.
+    """
+    if not COINBASE_VOLUME_CONFIRM:
+        return None
+    sym = str(symbol).upper()
+    if missing is not None and sym in missing:
+        return None
+    import urllib.error
+    import urllib.request
+    from urllib.parse import quote
+
+    url = f"{COINBASE_API}/products/{quote(sym, safe='')}-USD/candles?granularity=300"
+    req = urllib.request.Request(url, headers={"User-Agent": "market-movers-alerts/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=COINBASE_TIMEOUT) as resp:
+            candles = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404 and missing is not None:
+            missing[sym] = True
+        return None
+    except Exception:
+        return None
+    if not isinstance(candles, list):
+        return None
+    return relvol_from_candles(candles, minutes, now_ts)
+
+
+def collect_rate(rows, marks, fired, now_ts, pct, cb_missing=None):
     """Names climbing steadily, on volume, enough to be worth a look.
 
     Compares against the OLDEST stamp still inside the window, so a delayed
     run widens the comparison rather than breaking it, and the elapsed
     minutes actually used are carried through to the alert text. Sorted by
     size of move, because that is the order the per-run cap should keep.
+
+    For crypto the volume check comes from Coinbase's own candles once the
+    price bar is cleared (see COINBASE_VOLUME_CONFIRM); the CoinGecko figure
+    is the fallback. Which one answered is noted on the row as rv_source.
 
     Returns (alerts, quiet, unknown): names that cleared both bars, names
     that climbed but on ordinary volume, and names whose volume could not be
@@ -816,7 +1018,12 @@ def collect_rate(rows, marks, fired, now_ts, pct):
         move = move_since(r["price"], mark)
         if move < pct:
             continue
-        rv = relative_volume(r, mark)
+        rv = None
+        if r["kind"] == "crypto":
+            rv = coinbase_relvol(r["symbol"], mark[2], now_ts, cb_missing)
+            r["rv_source"] = "coinbase" if rv is not None else "coingecko"
+        if rv is None:
+            rv = relative_volume(r, mark)
         if rv is None:
             unknown += 1
             continue
@@ -874,7 +1081,31 @@ def too_broad(pending, rows):
     return len(pending) > max(3, int(RATE_BREADTH_MAX * len(rows)))
 
 
-def send_rate(pending, fired, now_ts, overnight, night_bar=OVERNIGHT_RATE_PCT):
+def tag_lines(state, key, now_ts, count_today=True):
+    """The '1st alert today' and 'still running: day N' lines for one name.
+
+    Updates the send log and the multi-day memory as a side effect, so call
+    it only when the alert is actually going out. With no state (tests, or
+    an old caller) it returns nothing and changes nothing.
+    """
+    if state is None:
+        return []
+    out = []
+    if count_today:
+        times = state.setdefault("alerts_today", {}).setdefault(key, [])
+        times.append(now_ts)
+        out.append(alert_count_line(times, now_ts))
+    streak = state.setdefault("streak", {})
+    today = local_date(now_ts)
+    days = note_streak(streak, key, today)
+    line = streak_line(days, streak[key].get("first"))
+    if line:
+        out.append(line)
+    return out
+
+
+def send_rate(pending, fired, now_ts, overnight, night_bar=OVERNIGHT_RATE_PCT,
+              state=None):
     held = 0
     for fkey, r, move, elapsed_min, rv in pending[:MAX_ALERTS_PER_RUN]:
         # Overnight, only a genuine run is worth waking him for. Compared
@@ -897,6 +1128,10 @@ def send_rate(pending, fired, now_ts, overnight, night_bar=OVERNIGHT_RATE_PCT):
             day += f"  -  +{off_low:.0f}% off 24h low"
         lines.append(day)
 
+        # First buzz or a repeat, and whether this name has been at it for
+        # days. The replay says these matter more than the volume multiple.
+        lines.extend(tag_lines(state, f"{r['kind']}:{r['symbol']}", now_ts))
+
         if r["kind"] == "crypto":
             breakeven, stop = cost_hints(r["price"])
             lines.append(f"break-even {money(breakeven)}  -  "
@@ -907,8 +1142,10 @@ def send_rate(pending, fired, now_ts, overnight, night_bar=OVERNIGHT_RATE_PCT):
              priority="max" if overnight else "high",
              tags="zap",
              click=robinhood_url(r))
+        src = r.get("rv_source")
         log(f"  RATE {r['symbol']} +{move:.1f}% over {elapsed_min:.0f}min "
-            f"on {rv:.1f}x volume (day {r['pct']:+.1f}%)")
+            f"on {rv:.1f}x volume{' (' + src + ')' if src else ''} "
+            f"(day {r['pct']:+.1f}%)")
     if held:
         log(f"  {held} rate signals held until morning")
 
@@ -961,7 +1198,7 @@ def collect_pending(rows, levels, fired, prefix):
     return pending
 
 
-def send_alerts(pending, fired, high_level, overnight):
+def send_alerts(pending, fired, high_level, overnight, state=None):
     sent, held = 0, 0
     for level, key, r in pending[:MAX_ALERTS_PER_RUN]:
         if overnight and level < high_level:
@@ -972,8 +1209,16 @@ def send_alerts(pending, fired, high_level, overnight):
         fired[key] = level
         sent += 1
         priority = priority_for(level, high_level, overnight)
+        body = format_body(r)
+        # A threshold crossing counts toward the multi-day memory but not the
+        # within-day tally - each level fires once a day by construction.
+        extra = tag_lines(state, f"{r['kind']}:{r['symbol']}",
+                          datetime.now(timezone.utc).timestamp(),
+                          count_today=False)
+        if extra:
+            body += "\n" + "\n".join(extra)
         push(f"{r['symbol']} crossed +{level:.0f}%",
-             format_body(r),
+             body,
              priority=priority,
              click=robinhood_url(r))
         log(f"  ALERT {r['symbol']} +{r['pct']:.1f}% "
@@ -1009,7 +1254,7 @@ def send_dip(coin, st, price):
         f"+{st['off_low']:.1f}% off 12h low")
 
 
-def run_watchlist(crypto_rows, marks, fired, now_ts, overnight):
+def run_watchlist(crypto_rows, marks, fired, now_ts, overnight, state=None):
     """Closer scrutiny for the coins in watchlist.json. Never fatal."""
     try:
         import watchlist as wl
@@ -1023,12 +1268,13 @@ def run_watchlist(crypto_rows, marks, fired, now_ts, overnight):
                 f"{', '.join(sorted(missing))}")
         # Early climb at the lower bar. Same cooldown key as the ordinary
         # rate signal, so a coin the 3% bar already sent is skipped here.
+        cb_missing = state.get("cb_missing") if state else None
         early, _, _ = collect_rate(rows, marks, fired, now_ts,
-                                   wl.WATCH_RATE_PCT)
+                                   wl.WATCH_RATE_PCT, cb_missing)
         if early:
             log(f"  watchlist: {len(early)} early climbs at "
                 f"{wl.WATCH_RATE_PCT:g}%")
-        send_rate(early, fired, now_ts, overnight)
+        send_rate(early, fired, now_ts, overnight, state=state)
         wl.check_dips(coins, {r["symbol"]: r["price"] for r in rows},
                       fired, now_ts, overnight, send_dip, log=log)
     except Exception as exc:
@@ -1071,10 +1317,18 @@ def main():
 
     # Rate of change first: it is the earliest signal, so it wins the run cap.
     craw, cquiet, cunknown = collect_rate(crypto_rows, marks, fired, now_ts,
-                                          CRYPTO_RATE_PCT)
+                                          CRYPTO_RATE_PCT, state["cb_missing"])
     if cquiet or cunknown:
         log(f"  {cquiet} coins climbing on ordinary volume"
             + (f", {cunknown} with no volume figure" if cunknown else ""))
+    # Which tape answered the volume question. If the fallback count ever
+    # dominates, Coinbase is unreachable from the runner and the gate has
+    # quietly gone back to the slow global figure.
+    on_cb = sum(1 for r in crypto_rows if r.get("rv_source") == "coinbase")
+    on_cg = sum(1 for r in crypto_rows if r.get("rv_source") == "coingecko")
+    if on_cb or on_cg:
+        log(f"  volume checked on Coinbase for {on_cb} coins over the price bar"
+            + (f", CoinGecko fallback for {on_cg}" if on_cg else ""))
     if too_broad(craw, crypto_rows):
         log(f"  {len(craw)} of {len(crypto_rows)} coins climbing - "
             f"market-wide, holding rate alerts")
@@ -1084,15 +1338,16 @@ def main():
         dropped = len(craw) - len(crate)
         log(f"{len(crate)} coins climbing fast enough to flag"
             + (f" ({dropped} dropped - not on Robinhood)" if dropped else ""))
-    send_rate(crate, fired, now_ts, overnight)
+    send_rate(crate, fired, now_ts, overnight, state=state)
     log(rate_bars(crypto_rows, marks, now_ts))
-    run_watchlist(crypto_rows, marks, fired, now_ts, overnight)
+    run_watchlist(crypto_rows, marks, fired, now_ts, overnight, state)
 
     crypto_pending = filter_tradable(
         collect_pending(crypto_movers, CRYPTO_ALERT_LEVELS, fired, "crypto"),
         tradable, 2)
     log(f"{len(crypto_pending)} new tradable crypto threshold crossings")
-    send_alerts(crypto_pending, fired, CRYPTO_HIGH_PRIORITY_LEVEL, overnight)
+    send_alerts(crypto_pending, fired, CRYPTO_HIGH_PRIORITY_LEVEL, overnight,
+                state=state)
 
     # --- Stocks: market hours only ---
     if force or market_is_open():
@@ -1126,7 +1381,7 @@ def main():
             dropped = len(sraw) - len(srate)
             log(f"{len(srate)} stocks climbing fast enough to flag"
                 + (f" ({dropped} dropped - not on Robinhood)" if dropped else ""))
-        send_rate(srate, fired, now_ts, overnight)
+        send_rate(srate, fired, now_ts, overnight, state=state)
         log(rate_bars(stock_rows, marks, now_ts))
 
         fraction = session_fraction()
@@ -1144,7 +1399,8 @@ def main():
         stock_pending = filter_tradable(
             collect_pending(movers, ALERT_LEVELS, fired, "stock"), tradable, 2)
         log(f"{len(stock_pending)} new tradable stock threshold crossings")
-        send_alerts(stock_pending, fired, HIGH_PRIORITY_LEVEL, overnight)
+        send_alerts(stock_pending, fired, HIGH_PRIORITY_LEVEL, overnight,
+                    state=state)
     else:
         log("Outside market hours - skipping the stock screen")
 

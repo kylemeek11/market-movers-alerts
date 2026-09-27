@@ -14,6 +14,12 @@ from datetime import datetime, timezone
 
 import alerts_bot as ab
 
+# These suites test the price signal and the CoinGecko arithmetic; keep the
+# Coinbase confirmation out of the way so nothing here touches the network.
+# The real function is kept for its own section near the end.
+REAL_COINBASE_RELVOL = ab.coinbase_relvol
+ab.coinbase_relvol = lambda *a, **k: None
+
 FAILURES = []
 
 
@@ -436,6 +442,168 @@ print("\nStale marks")
 marks = {"crypto:OLD": [[t0 - 3 * 3600, 1.0]], "crypto:NEW": [[t0, 1.0]]}
 ab.drop_stale_marks(marks, t0)
 check("stale names are forgotten", list(marks) == ["crypto:NEW"])
+
+print("\nCoinbase volume confirmation")
+
+# 25 hours of 5-minute candles at a flat $1,000/candle, then a 70-minute
+# window at 4x that pace. Coinbase rows are [time, low, high, open, close, vol].
+NOW = 1_800_000_000
+def cb_candles(window_mult, minutes=70, hours=25, gap_hours=0):
+    rows = []
+    for k in range(hours * 12):
+        t = NOW - (k + 1) * 300
+        if gap_hours and t < NOW - minutes * 60 and t > NOW - (minutes * 60 + gap_hours * 3600):
+            continue                        # a quiet stretch Coinbase left out
+        vol = 1000.0 * (window_mult if t >= NOW - minutes * 60 else 1.0)
+        rows.append([t, 1.0, 1.0, 1.0, 1.0, vol])
+    return rows
+
+rv = ab.relvol_from_candles(cb_candles(4.0), 70, NOW)
+check("a 4x window reads as ~4x", rv is not None and abs(rv - 4.0) < 0.05, rv)
+rv1 = ab.relvol_from_candles(cb_candles(1.0), 70, NOW)
+check("an ordinary window reads as ~1x", rv1 is not None and abs(rv1 - 1.0) < 0.05, rv1)
+# Missing candles are zero-volume periods, so the baseline is measured by
+# time span - a 6-hour hole must LOWER normal pace, not raise it.
+rv_gap = ab.relvol_from_candles(cb_candles(1.0, gap_hours=6), 70, NOW)
+check("omitted candles count as quiet time, not as missing time",
+      rv_gap is not None and rv_gap > 1.2, rv_gap)
+check("too little history gives no opinion",
+      ab.relvol_from_candles(cb_candles(4.0, hours=3), 70, NOW) is None)
+check("garbage rows are skipped, not fatal",
+      ab.relvol_from_candles(cb_candles(4.0) + [["x"], None, [1, 2]], 70, NOW) is not None)
+check("empty input gives None", ab.relvol_from_candles([], 70, NOW) is None)
+
+# The network wrapper: a 404 is remembered for the day, any other trouble
+# just means no opinion (the CoinGecko fallback takes over).
+import urllib.error
+
+def http_error(code):
+    def opener(req, timeout=None):
+        raise urllib.error.HTTPError(req.full_url, code, "nope", {}, None)
+    return opener
+
+real_cb = REAL_COINBASE_RELVOL        # the suite pins the module's copy to None above
+
+missing = {}
+real_open = urllib.request.urlopen
+urllib.request.urlopen = http_error(404)
+try:
+    got = real_cb("NOPE", 70, NOW, missing)
+finally:
+    urllib.request.urlopen = real_open
+check("a 404 gives no opinion", got is None)
+check("...and is remembered so the coin is not asked about again today", missing == {"NOPE": True})
+calls = []
+urllib.request.urlopen = lambda req, timeout=None: calls.append(req) or (_ for _ in ()).throw(RuntimeError("should not be called"))
+try:
+    got = real_cb("NOPE", 70, NOW, missing)
+finally:
+    urllib.request.urlopen = real_open
+check("a remembered miss costs no request", got is None and calls == [])
+urllib.request.urlopen = http_error(500)
+try:
+    got = real_cb("ERR", 70, NOW, missing)
+finally:
+    urllib.request.urlopen = real_open
+check("a server error is not remembered as a missing market", got is None and "ERR" not in missing)
+urllib.request.urlopen = fake_markets(cb_candles(4.0))
+try:
+    got = real_cb("GOOD", 70, NOW, {})
+finally:
+    urllib.request.urlopen = real_open
+check("a real candle payload comes back as the window multiple",
+      got is not None and abs(got - 4.0) < 0.05, got)
+
+# collect_rate must PREFER Coinbase when it has an opinion, both ways round.
+def climb_with(cb_answer, cg_growth):
+    marks, fired = {}, {}
+    row = {"kind": "crypto", "symbol": "CB", "name": "Test", "price": 100.0,
+           "pct": 2.0, "dollars": 1e8, "hour_pct": None}
+    ab.record_marks([row], marks, t0)
+    row = dict(row, price=104.0, dollars=1e8 * cg_growth)
+    saved = ab.coinbase_relvol
+    ab.coinbase_relvol = lambda sym, minutes, now_ts, missing=None: cb_answer
+    try:
+        hits, quiet, unknown = ab.collect_rate([row], marks, fired, t0 + 60 * 60,
+                                               ab.CRYPTO_RATE_PCT)
+    finally:
+        ab.coinbase_relvol = saved
+    return hits, quiet, row.get("rv_source")
+
+hits, quiet, src = climb_with(4.0, 1.0)      # Coinbase busy, CoinGecko flat
+check("Coinbase volume can confirm a climb CoinGecko calls ordinary",
+      len(hits) == 1 and src == "coinbase", (len(hits), quiet, src))
+hits, quiet, src = climb_with(1.0, 1.5)      # Coinbase quiet, CoinGecko busy
+check("...and Coinbase can veto one CoinGecko would have sent",
+      hits == [] and quiet == 1 and src == "coinbase", (len(hits), quiet, src))
+hits, quiet, src = climb_with(None, 1.5)     # no Coinbase market
+check("with no Coinbase opinion the CoinGecko figure decides",
+      len(hits) == 1 and src == "coingecko", (len(hits), quiet, src))
+check("the CoinGecko figure is what gets reported in that case",
+      hits and hits[0][4] > ab.RATE_MIN_RELVOL)
+
+print("\nAlert tags: first buzz, repeats, days running")
+st = {"alerts_today": {}, "streak": {}}
+noon = datetime(2026, 9, 27, 17, 0, tzinfo=timezone.utc).timestamp()   # noon CT
+lines = ab.tag_lines(st, "crypto:QNT", noon)
+check("the first alert says so", lines == ["1st alert today"], lines)
+lines = ab.tag_lines(st, "crypto:QNT", noon + 3600)
+check("the second says repeat #2 and when the first was",
+      lines == ["alert #2 today (first 12:00pm)"], lines)
+lines = ab.tag_lines(st, "crypto:QNT", noon + 7200)
+check("...and keeps counting", lines and lines[0].startswith("alert #3 today"), lines)
+check("a day-1 name carries no streak line", len(lines) == 1, lines)
+check("no state means no lines and no crash", ab.tag_lines(None, "crypto:QNT", noon) == [])
+
+# Days running, in Central days. Three alerts on one day are one day.
+streak = {}
+check("first day", ab.note_streak(streak, "crypto:QNT", "2026-09-24") == 1)
+check("same day again does not inflate", ab.note_streak(streak, "crypto:QNT", "2026-09-24") == 1)
+check("next day makes two", ab.note_streak(streak, "crypto:QNT", "2026-09-25") == 2)
+check("and three", ab.note_streak(streak, "crypto:QNT", "2026-09-26") == 3)
+check("first day is remembered", streak["crypto:QNT"]["first"] == "2026-09-24")
+check("a skipped day starts over", ab.note_streak(streak, "crypto:QNT", "2026-09-28") == 1)
+check("the streak line names the day count and the first weekday",
+      ab.streak_line(3, "2026-09-24") == "still running: day 3 of alerts (first Thu)",
+      ab.streak_line(3, "2026-09-24"))
+check("no line on day one", ab.streak_line(1, "2026-09-24") is None)
+kept = ab.prune_streak({"a": {"first": "2026-09-20", "last": "2026-09-20", "days": 1},
+                        "b": {"first": "2026-09-25", "last": "2026-09-26", "days": 2},
+                        "bad": {"nope": 1}}, "2026-09-27")
+check("old and broken entries are pruned, recent ones kept", list(kept) == ["b"], kept)
+
+# The memory must survive the daily reset that wipes everything else.
+import tempfile, os
+tmp = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+json.dump({"date": "2000-01-01", "fired": {"x": 1}, "marks": {"m": []},
+           "streak": {"crypto:QNT": {"first": ab.local_date(), "last": ab.local_date(), "days": 2}}}, tmp)
+tmp.close()
+saved_path = ab.STATE_FILE
+ab.STATE_FILE = ab.Path(tmp.name)
+try:
+    fresh = ab.load_state()
+finally:
+    ab.STATE_FILE = saved_path
+    os.unlink(tmp.name)
+check("a new day starts with empty fired/marks", fresh["fired"] == {} and fresh["marks"] == {})
+check("...but keeps the days-running memory", fresh["streak"].get("crypto:QNT", {}).get("days") == 2, fresh["streak"])
+check("and has the new buckets", "alerts_today" in fresh and "cb_missing" in fresh)
+
+# End to end: the lines reach the notification body.
+sent = []
+real_push = ab.push
+ab.push = lambda title, message, **k: sent.append((title, message))
+try:
+    st = {"alerts_today": {}, "streak": {"crypto:QNT": {"first": "2026-09-24", "last": ab.local_date(noon - 86400), "days": 3}}}
+    row = {"kind": "crypto", "symbol": "QNT", "name": "Quant", "price": 168.6,
+           "pct": 57.6, "low_24h": 109.0, "rv_source": "coinbase"}
+    ab.send_rate([("rate:crypto:QNT", row, 5.9, 69.0, 3.2)], {}, noon, False, state=st)
+finally:
+    ab.push = real_push
+body = sent[0][1] if sent else ""
+check("rate alert body carries the first-buzz line", "1st alert today" in body, body)
+check("...and the days-running line", "still running: day 4 of alerts (first Thu)" in body, body)
+check("the old lines are still there", "break-even" in body and "off 24h low" in body)
 
 print()
 if FAILURES:
