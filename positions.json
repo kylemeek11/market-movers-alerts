@@ -52,7 +52,7 @@
       "qty": 2000,
       "avg_cost": 0.50954,
       "spread_pct": 0.95,
-      "current_stop": 0.52942,
+      "current_stop": 0.51547,
       "room_override_pct": null,
       "routing": "exchange",
       "decimals": 5
