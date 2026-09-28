@@ -8,7 +8,7 @@
       "qty": 525,
       "avg_cost": 67.21,
       "spread_pct": 0.96,
-      "current_stop": 68.00,
+      "current_stop": 68,
       "room_override_pct": null,
       "routing": "exchange",
       "decimals": 2
@@ -56,6 +56,39 @@
       "room_override_pct": null,
       "routing": "exchange",
       "decimals": 5
+    },
+    {
+      "symbol": "GRT",
+      "product": "GRT-USD",
+      "qty": 30000,
+      "avg_cost": 0.036907,
+      "spread_pct": 1.11,
+      "current_stop": null,
+      "room_override_pct": null,
+      "routing": "exchange",
+      "decimals": 6
+    },
+    {
+      "symbol": "SEI",
+      "product": "SEI-USD",
+      "qty": 15000,
+      "avg_cost": 0.07982,
+      "spread_pct": 1.03,
+      "current_stop": null,
+      "room_override_pct": null,
+      "routing": "exchange",
+      "decimals": 5
+    },
+    {
+      "symbol": "ONDO",
+      "product": "ONDO-USD",
+      "qty": 2000,
+      "avg_cost": 0.5929,
+      "spread_pct": 0.98,
+      "current_stop": null,
+      "room_override_pct": null,
+      "routing": "exchange",
+      "decimals": 4
     }
   ]
 }
