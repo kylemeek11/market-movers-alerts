@@ -1,6 +1,6 @@
 {
   "_note": "Edit this when you buy, sell, or enter new stop orders. 'current_stop' is what you actually have live on Robinhood right now - set it to null if you have no stop on that coin, and the next run will tell you what to enter. 'spread_pct' is the 'Buy spread (x%)' figure from the coin's order ticket; it drifts slowly, so re-read it every few weeks. 'room_override_pct' forces a width instead of the measured one; leave null to let the script decide. 'routing' is how a sale executes: 'exchange' (Fee tiers on, itemized taker fee), 'market_maker' (spread in the price) or 'unknown' (treated as exchange). It sets the breakeven floor: once current_stop is at or above breakeven, the script never recommends a stop below it.",
-  "_updated": "2026-09-27",
+  "_updated": "2026-09-28",
   "positions": [
     {
       "symbol": "LTC",
@@ -12,17 +12,6 @@
       "room_override_pct": null,
       "routing": "exchange",
       "decimals": 2
-    },
-    {
-      "symbol": "NEAR",
-      "product": "NEAR-USD",
-      "qty": 2500,
-      "avg_cost": 4.5129,
-      "spread_pct": 0.98,
-      "current_stop": 4.9625,
-      "room_override_pct": null,
-      "routing": "exchange",
-      "decimals": 4
     },
     {
       "symbol": "RAY",
@@ -45,17 +34,6 @@
       "room_override_pct": 12,
       "routing": "exchange",
       "decimals": 8
-    },
-    {
-      "symbol": "WLD",
-      "product": "WLD-USD",
-      "qty": 2000,
-      "avg_cost": 0.50954,
-      "spread_pct": 0.95,
-      "current_stop": 0.51547,
-      "room_override_pct": null,
-      "routing": "exchange",
-      "decimals": 5
     },
     {
       "symbol": "GRT",
