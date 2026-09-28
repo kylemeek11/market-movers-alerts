@@ -63,8 +63,8 @@
       "qty": 30000,
       "avg_cost": 0.036907,
       "spread_pct": 1.11,
-      "current_stop": null,
-      "room_override_pct": null,
+      "current_stop": 0.030254,
+      "room_override_pct": 15,
       "routing": "exchange",
       "decimals": 6
     },
@@ -74,8 +74,8 @@
       "qty": 15000,
       "avg_cost": 0.07982,
       "spread_pct": 1.03,
-      "current_stop": null,
-      "room_override_pct": null,
+      "current_stop": 0.06742,
+      "room_override_pct": 15,
       "routing": "exchange",
       "decimals": 5
     },
@@ -85,8 +85,8 @@
       "qty": 2000,
       "avg_cost": 0.5929,
       "spread_pct": 0.98,
-      "current_stop": null,
-      "room_override_pct": null,
+      "current_stop": 0.4919,
+      "room_override_pct": 15,
       "routing": "exchange",
       "decimals": 4
     }
