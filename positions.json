@@ -63,7 +63,7 @@
       "qty": 10000,
       "avg_cost": 0.135084,
       "spread_pct": 1.04,
-      "current_stop": null,
+      "current_stop": 0.11119,
       "room_override_pct": 15,
       "routing": "market_maker",
       "decimals": 5
@@ -74,11 +74,35 @@
       "qty": 10000,
       "avg_cost": 0.124848,
       "spread_pct": 1.03,
-      "current_stop": null,
+      "current_stop": 0.104,
       "room_override_pct": 15,
       "routing": "exchange",
       "sell_fee_pct": 0.75,
       "decimals": 4
+    },
+    {
+      "symbol": "LINK",
+      "product": "LINK-USD",
+      "qty": 100,
+      "avg_cost": 15.0925,
+      "spread_pct": 0.97,
+      "current_stop": null,
+      "room_override_pct": 15,
+      "routing": "exchange",
+      "sell_fee_pct": 0.75,
+      "decimals": 2
+    },
+    {
+      "symbol": "LDO",
+      "product": "LDO-USD",
+      "qty": 2500,
+      "avg_cost": 0.456796,
+      "spread_pct": 1.03,
+      "current_stop": null,
+      "room_override_pct": 15,
+      "routing": "exchange",
+      "sell_fee_pct": 0.75,
+      "decimals": 5
     }
   ]
 }
