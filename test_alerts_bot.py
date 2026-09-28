@@ -688,6 +688,71 @@ check("...and asks CoinGecko for it", "7d" in ab.COINGECKO_URL, ab.COINGECKO_URL
 rows_none = with_urlopen([dict(coins[1])], lambda: ab.screen_crypto(None))
 check("a missing week figure is None, not a crash", rows_none and rows_none[0].get("week_pct") is None)
 
+
+print("\nEvery Robinhood coin, not just the top 250")
+top_page = [dict(coins[1])]                      # RUN is in the top page
+tail_coin = {"symbol": "zora", "name": "Zora", "current_price": 0.02,
+             "total_volume": 1.3e7, "market_cap": 3.5e7,
+             "price_change_percentage_24h_in_currency": 6.0,
+             "price_change_percentage_7d_in_currency": 12.0}
+thin_coin = dict(tail_coin, symbol="mew", total_volume=1.5e6)
+check("missing = Robinhood coins not on the page, stables aside",
+      ab.missing_robinhood(top_page, {"RUN", "ZORA", "USDC", "MEW"}) == ["MEW", "ZORA"],
+      ab.missing_robinhood(top_page, {"RUN", "ZORA", "USDC", "MEW"}))
+check("nothing missing without a Robinhood list", ab.missing_robinhood(top_page, None) == [])
+
+asked = []
+def two_calls(req, timeout=None):
+    url = req.full_url if hasattr(req, "full_url") else req
+    asked.append(url)
+    body = [tail_coin, thin_coin, dict(coins[1])] if "symbols=" in url else top_page
+    return fake_markets(body)(req, timeout)
+real = urllib.request.urlopen
+urllib.request.urlopen = two_calls
+try:
+    rows_tail = ab.screen_crypto({"RUN", "ZORA", "MEW"})
+finally:
+    urllib.request.urlopen = real
+syms_tail = sorted(r["symbol"] for r in rows_tail)
+check("the tail is fetched by symbol", len(asked) == 2 and "symbols=mew,zora" in asked[1], asked)
+check("a $35M-cap, $13M-volume coin is now tracked", "ZORA" in syms_tail, syms_tail)
+check("a coin under $2M volume still is not", "MEW" not in syms_tail, syms_tail)
+check("no duplicate when the tail repeats a top coin", syms_tail.count("RUN") == 1, syms_tail)
+check("rows carry market cap", [r for r in rows_tail if r["symbol"] == "ZORA"][0]["cap"] == 3.5e7)
+
+calls2 = []
+def tail_fails(req, timeout=None):
+    url = req.full_url if hasattr(req, "full_url") else req
+    calls2.append(url)
+    if "symbols=" in url:
+        raise OSError("rate limited")
+    return fake_markets(top_page)(req, timeout)
+urllib.request.urlopen = tail_fails
+try:
+    rows_f = ab.screen_crypto({"RUN", "ZORA"})
+finally:
+    urllib.request.urlopen = real
+check("a failed tail fetch keeps the top page", [r["symbol"] for r in rows_f] == ["RUN"], rows_f)
+
+calls3 = []
+def one_call(req, timeout=None):
+    calls3.append(req)
+    return fake_markets(top_page)(req, timeout)
+urllib.request.urlopen = one_call
+try:
+    ab.screen_crypto({"RUN"})
+finally:
+    urllib.request.urlopen = real
+check("no second request when nothing is missing", len(calls3) == 1, len(calls3))
+
+top, lines = ab.tier_lines(crow(cap=3.5e7), 2.6, False)
+check("small coins carry the stop warning",
+      any("small coin ($35M cap)" in l for l in lines), lines)
+top, lines = ab.tier_lines(crow(cap=5e8), 2.6, False)
+check("larger coins do not", not any("small coin" in l for l in lines), lines)
+top, lines = ab.tier_lines({"kind": "stock", "symbol": "S", "pct": 3.0, "cap": 1e7}, 6.0, True)
+check("stocks never get the crypto small-coin line", not any("small coin" in l for l in lines), lines)
+
 print()
 if FAILURES:
     print(f"{len(FAILURES)} FAILED: {FAILURES}")

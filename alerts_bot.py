@@ -52,9 +52,23 @@ EXCLUDE_FOREIGN = True
 # Crypto is far more volatile than equities, so the thresholds start higher:
 # a 10% day is unremarkable for a coin and would just be noise.
 CRYPTO_ALERT_LEVELS = [15.0, 25.0, 40.0, 60.0, 100.0]
-CRYPTO_MIN_24H_VOLUME = 10_000_000     # USD traded in 24h
-CRYPTO_MIN_MARKET_CAP = 50_000_000
+CRYPTO_MIN_24H_VOLUME = 2_000_000      # USD traded in 24h
+CRYPTO_MIN_MARKET_CAP = 20_000_000
 CRYPTO_TOP_N = 250                     # how many coins by market cap to watch
+# Every Robinhood coin is watched, not just the top 250 (2026-09-28).
+# Measured over the month to 09-28: 20 of Robinhood's 87 coins were invisible
+# to the bot - outside the top 250 (MEGA, MOODENG, ZORA, BILL...) or under the
+# old $10M volume / $50M cap gates (SKR, FLR, XTZ...). They ran MORE, not
+# less: 2.7 runs of 20%+ per coin against 2.3 for the coins the bot could see,
+# and they included SKR +246% and ZORA +102%. Across all 396 Coinbase coins,
+# runs were most frequent in the smallest, cheapest coins - price per coin is
+# not the cause (it only reflects how many coins exist), size and liquidity
+# are. So the gates now only keep out coins too thin to fill a ~$1-2K order
+# cleanly, and the Robinhood coins outside the top 250 are fetched by symbol.
+CRYPTO_FETCH_MISSING_RH = True
+# Coins below this market cap get a warning line: they run more often but
+# fall just as hard, so the stop goes in the moment the buy fills.
+SMALL_CAP_USD = 100_000_000
 
 # Tracked but never interesting: a stablecoin does not "run", and its normal
 # few-tenths wobble is pure noise in a rate window. A depeg is real news but
@@ -329,6 +343,13 @@ COINGECKO_URL = (
     "?vs_currency=usd&order=market_cap_desc"
     f"&per_page={CRYPTO_TOP_N}&page=1&price_change_percentage=1h,24h,7d"
 )
+# Same fields, for named symbols. include_tokens=top returns the largest coin
+# for each symbol, which is the one Robinhood lists.
+COINGECKO_SYMBOLS_URL = (
+    "https://api.coingecko.com/api/v3/coins/markets"
+    "?vs_currency=usd&include_tokens=top&price_change_percentage=1h,24h,7d"
+    "&symbols="
+)
 
 
 def log(msg):
@@ -545,18 +566,32 @@ def robinhood_symbols():
     return out
 
 
-def screen_crypto(allowed=None):
-    """Top coins by market cap, filtered to what is liquid and buyable."""
+def _coingecko(url):
     import urllib.request
 
     req = urllib.request.Request(
-        COINGECKO_URL,
+        url,
         headers={"Accept": "application/json",
                  "User-Agent": "market-movers-alerts/1.0"},
     )
+    with urllib.request.urlopen(req, timeout=25) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def missing_robinhood(coins, allowed):
+    """Robinhood symbols the top-N page did not include (stables aside)."""
+    if not allowed:
+        return []
+    seen = {(c.get("symbol") or "").upper() for c in coins}
+    return sorted(s for s in allowed
+                  if s not in seen and s not in STABLE_SKIP and TICKER_RE.match(s))
+
+
+def screen_crypto(allowed=None):
+    """Top coins by market cap plus every other Robinhood coin, filtered to
+    what is liquid and buyable."""
     try:
-        with urllib.request.urlopen(req, timeout=25) as resp:
-            coins = json.loads(resp.read().decode("utf-8"))
+        coins = _coingecko(COINGECKO_URL)
     except Exception as exc:
         log(f"  crypto screener failed: {exc}")
         return []
@@ -564,6 +599,24 @@ def screen_crypto(allowed=None):
     if not isinstance(coins, list):
         log("  crypto screener returned an unexpected payload")
         return []
+
+    if CRYPTO_FETCH_MISSING_RH:
+        missing = missing_robinhood(coins, allowed)
+        if missing:
+            try:
+                extra = _coingecko(COINGECKO_SYMBOLS_URL
+                                   + ",".join(s.lower() for s in missing))
+                if isinstance(extra, list):
+                    seen = {(c.get("symbol") or "").upper() for c in coins}
+                    added = [c for c in extra
+                             if (c.get("symbol") or "").upper() not in seen]
+                    coins = coins + added
+                    log(f"  +{len(added)} Robinhood coins outside the top "
+                        f"{CRYPTO_TOP_N}")
+            except Exception as exc:
+                # The top-N list still works; losing the tail is not fatal.
+                log(f"  Robinhood tail fetch failed ({exc}) - top "
+                    f"{CRYPTO_TOP_N} only this run")
 
     out, odd, off = [], 0, 0
     for c in coins:
@@ -606,6 +659,7 @@ def screen_crypto(allowed=None):
             "pct": float(chg),
             "price": float(price),
             "dollars": float(vol),
+            "cap": float(cap),
             "hour_pct": hour,
             # The week behind it. Alerts on coins already up 20%+ on the week
             # averaged a LOSS over 60 days (see CAUTION_WEEK_PCT).
@@ -1156,6 +1210,10 @@ def tier_lines(r, rv, first):
         top = True
         lines.append(f"TOP SETUP - day still under {TOP_TIER_MAX_DAY_PCT:.0f}%, {rv:.0f}x volume: "
                      f"these averaged +11% under a 15% stop")
+    cap = r.get("cap")
+    if r.get("kind") == "crypto" and cap and cap < SMALL_CAP_USD:
+        lines.append(f"small coin (${cap / 1e6:.0f}M cap): runs more often, "
+                     f"falls just as hard - enter the 15% stop as soon as it fills")
     if week is not None and week >= CAUTION_WEEK_PCT:
         lines.append(f"caution: already up {week:.0f}% on the week - alerts like "
                      f"this averaged a loss (the rare monster excepted)")
