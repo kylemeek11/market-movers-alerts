@@ -8,21 +8,10 @@
       "qty": 525,
       "avg_cost": 67.21,
       "spread_pct": 0.96,
-      "current_stop": 68,
+      "current_stop": 68.0,
       "room_override_pct": null,
       "routing": "exchange",
       "decimals": 2
-    },
-    {
-      "symbol": "RAY",
-      "product": "RAY-USD",
-      "qty": 5000,
-      "avg_cost": 2.06687,
-      "spread_pct": 0.98,
-      "current_stop": 1.95283,
-      "room_override_pct": null,
-      "routing": "market_maker",
-      "decimals": 5
     },
     {
       "symbol": "SHIB",
@@ -66,6 +55,29 @@
       "current_stop": 0.4919,
       "room_override_pct": 15,
       "routing": "exchange",
+      "decimals": 4
+    },
+    {
+      "symbol": "ALGO",
+      "product": "ALGO-USD",
+      "qty": 10000,
+      "avg_cost": 0.135084,
+      "spread_pct": 1.04,
+      "current_stop": null,
+      "room_override_pct": 15,
+      "routing": "market_maker",
+      "decimals": 5
+    },
+    {
+      "symbol": "HBAR",
+      "product": "HBAR-USD",
+      "qty": 10000,
+      "avg_cost": 0.124848,
+      "spread_pct": 1.03,
+      "current_stop": null,
+      "room_override_pct": 15,
+      "routing": "exchange",
+      "sell_fee_pct": 0.75,
       "decimals": 4
     }
   ]
