@@ -29,6 +29,17 @@ breakeven. Breakeven is average cost grossed up for what a sale costs, so a
 stop at the floor exits flat rather than at a small loss. Before the stop has
 reached breakeven the floor does nothing - forcing a stop up to cost while the
 price is only a few percent above it would put the stop inside ordinary noise.
+
+Ratchet (added 2026-09-28, Kyle's rule): a stop only ever moves UP. The
+measured room is re-priced from the live price every run, so after an
+overnight drop it would happily recommend lowering every stop - which is
+selling the insurance at the bottom, exactly when it is worth the most. Now
+the script holds the stop Kyle already has whenever the measurement comes in
+below it. It still says "raise it" when the price has run, and it still warns
+when a stop is about to fire; the "too tight, lower it" alerts are gone. The
+evidence: NEAR and WLD both filled overnight on 09-27/28 with the trail
+intact, and the 60-day alert study (project doc "Alert filtering notes")
+measured returns with a trailing-only stop.
 """
 
 import json
@@ -90,6 +101,10 @@ MIN_NIGHTS = 5
 # Breakeven floor. Once the live stop is at or above breakeven, never
 # recommend a stop below breakeven.
 BREAKEVEN_FLOOR = True
+# Ratchet. Never recommend a stop below the one already entered: the
+# recommendation is max(measured stop, live stop). Set False to get the old
+# "lower it after a drop" advice back.
+RATCHET = True
 # What a sale costs on top of the fill, by routing:
 #   exchange      - itemized taker fee, charged on the sale notional. 0.95% is
 #                   the $0-10K 30-day volume tier; it falls as volume rises.
@@ -324,6 +339,11 @@ def evaluate(pos, price, candles):
     locked = BREAKEVEN_FLOOR and live is not None and float(live) >= breakeven
     floored = locked and measured < breakeven
     stop = breakeven if floored else measured
+    # Ratcheted = the stop he already has is higher than anything the
+    # measurement (or the floor) would suggest. Hold it: stops only move up.
+    ratcheted = RATCHET and live is not None and stop < float(live)
+    if ratcheted:
+        stop = float(live)
     qty = float(pos["qty"])
     return {
         "symbol": pos["symbol"],
@@ -333,6 +353,7 @@ def evaluate(pos, price, candles):
         "breakeven": breakeven,
         "locked": locked,
         "floored": floored,
+        "ratcheted": ratcheted,
         "lock_price": lock_price(breakeven, room, spread),
         "room": room,
         "reason": reason,
@@ -356,9 +377,12 @@ def alert_reason(ev, overnight):
     if live is None:
         return "no stop set"
     if live >= price * (1 - TOO_CLOSE_PCT / 100.0):
-        if ev.get("floored"):
+        if ev.get("floored") and not ev.get("ratcheted"):
             return ("price is back near breakeven - the floor is doing its "
                     "job; this stop exits flat if it fires")
+        if ev.get("ratcheted"):
+            return ("price is back down at your stop - it will fire; that is "
+                    "the trail doing its job, nothing to change")
         return "live stop is at/above the market - it will fire"
     drift = abs(stop - live) / price * 100.0
     bar = OVERNIGHT_DRIFT_PCT if overnight else DRIFT_PCT
@@ -418,13 +442,18 @@ def describe(ev, why):
         detail += f" (live: ${fmt(live, d)})"
     lines.append(detail)
     lines.append(f"  risk ${ev['risk']:,.0f} | {ev['vs_cost']:+.1f}% vs cost")
-    if ev.get("floored"):
+    if ev.get("ratcheted"):
+        lines.append(f"  HELD at your live stop - the measured room would put "
+                     f"it at ${fmt(ev['measured_stop'], d)}, but stops only "
+                     f"move up")
+    elif ev.get("floored"):
         lines.append(f"  FLOORED at breakeven ${fmt(ev['breakeven'], d)} - "
                      f"measured room alone says ${fmt(ev['measured_stop'], d)}. "
                      f"Tighter than the noise, on purpose: a dip takes you "
                      f"out flat.")
-    elif ev.get("locked"):
-        lines.append(f"  breakeven ${fmt(ev['breakeven'], d)} is locked in")
+    if ev.get("locked"):
+        if ev.get("ratcheted") or not ev.get("floored"):
+            lines.append(f"  breakeven ${fmt(ev['breakeven'], d)} is locked in")
     elif "breakeven" in ev:
         lines.append(f"  breakeven ${fmt(ev['breakeven'], d)} - locks in once "
                      f"price reaches ~${fmt(ev['lock_price'], d)} and you "
@@ -434,6 +463,18 @@ def describe(ev, why):
                      f"vs {ev['typical_6h']:.1f}% typical")
     lines.append(f"  why: {why}")
     return "\n".join(lines)
+
+
+def needs_action(why):
+    """False for the one alert that asks for nothing: a stop about to fire."""
+    return "will fire" not in why
+
+
+def alert_title(to_alert):
+    symbols = ", ".join(ev["symbol"] for ev, _ in to_alert)
+    if any(needs_action(why) for _, why in to_alert):
+        return f"Stops to update: {symbols}"
+    return f"Stop about to fire: {symbols}"
 
 
 def main():
@@ -476,7 +517,8 @@ def main():
         log(f"  {ev['symbol']}: ${fmt(price, ev['decimals'])} "
             f"-> ${fmt(ev['stop'], ev['decimals'])} "
             f"({ev['room']:.1f}% room){' RUNNING' if ev['running'] else ''}"
-            f"{' FLOORED' if ev['floored'] else ' locked' if ev['locked'] else ''}"
+            f"{' HELD' if ev['ratcheted'] else ' FLOORED' if ev['floored'] else ''}"
+            f"{' locked' if ev['locked'] and not ev['floored'] else ''}"
             f"{' | ' + why if why else ''}")
         if why and (force or not suppressed(ev, state, now_ts)):
             to_alert.append((ev, why))
@@ -492,11 +534,12 @@ def main():
         body += (f"\n\nBook ${total_value:,.0f} | "
                  f"at risk ${total_risk:,.0f} "
                  f"({total_risk / total_value * 100:.1f}%) at these levels")
-        body += "\nCancel the old stop before entering the new one."
+        if any(needs_action(why) for _, why in to_alert):
+            body += "\nCancel the old stop before entering the new one."
         body += ("\nPrices are Coinbase's; Robinhood's quote can sit "
                  "~0.5% either side, so re-check on the ticket.")
         push(
-            title=f"Stops to update: {symbols}",
+            title=alert_title(to_alert),
             message=body,
             priority="max" if overnight else "high",
             tags="lock",

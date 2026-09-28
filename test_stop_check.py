@@ -234,45 +234,150 @@ def test_breakeven_floor():
             "avg_cost": 4.5129, "spread_pct": 0.98, "routing": "exchange",
             "room_override_pct": None, "decimals": 4}
 
-    # Locked (live stop above breakeven), price slips: floor holds.
-    ev = sc.evaluate(dict(base, current_stop=4.7027), 4.60, calm)
-    check("locked position is flagged", ev["locked"] is True)
-    check("measured stop would sit below breakeven",
-          ev["measured_stop"] < ev["breakeven"], ev["measured_stop"])
-    check("recommendation floored at breakeven",
-          ev["floored"] and ev["stop"] == ev["breakeven"], ev["stop"])
-    check("vs_cost is no longer negative once floored", ev["vs_cost"] >= 0,
-          ev["vs_cost"])
+    # The floor's own behaviour, with the ratchet out of the way (the ratchet
+    # would otherwise hold the live stop in the first two cases; that is
+    # covered in test_ratchet).
+    try:
+        sc.RATCHET = False
 
-    # Not locked (live stop below breakeven): the floor stays out of the way,
-    # because forcing it would put the stop inside the noise.
-    ev = sc.evaluate(dict(base, current_stop=4.35394), 4.60, calm)
-    check("unlocked position is not floored",
-          not ev["floored"] and ev["stop"] == ev["measured_stop"])
-    check("describe says where the lock engages",
-          "locks in once price reaches" in sc.describe(ev, "x"))
+        # Locked (live stop above breakeven), price slips: floor holds.
+        ev = sc.evaluate(dict(base, current_stop=4.7027), 4.60, calm)
+        check("locked position is flagged", ev["locked"] is True)
+        check("measured stop would sit below breakeven",
+              ev["measured_stop"] < ev["breakeven"], ev["measured_stop"])
+        check("recommendation floored at breakeven",
+              ev["floored"] and ev["stop"] == ev["breakeven"], ev["stop"])
+        check("vs_cost is no longer negative once floored",
+              ev["vs_cost"] >= 0, ev["vs_cost"])
+        check("floored describe names the floor",
+              "FLOORED at breakeven" in sc.describe(ev, "x"))
 
-    # Locked and the measured stop is already higher: normal trailing.
+        # Not locked (live stop below breakeven): the floor stays out of the
+        # way, because forcing it would put the stop inside the noise.
+        ev = sc.evaluate(dict(base, current_stop=4.35394), 4.60, calm)
+        check("unlocked position is not floored",
+              not ev["floored"] and ev["stop"] == ev["measured_stop"])
+        check("describe says where the lock engages",
+              "locks in once price reaches" in sc.describe(ev, "x"))
+
+        # Switch off: old behaviour.
+        try:
+            sc.BREAKEVEN_FLOOR = False
+            ev = sc.evaluate(dict(base, current_stop=4.7027), 4.60, calm)
+            check("floor can be switched off", not ev["floored"]
+                  and ev["stop"] == ev["measured_stop"])
+        finally:
+            sc.BREAKEVEN_FLOOR = True
+    finally:
+        sc.RATCHET = True
+
+    # Locked and the measured stop is already higher: normal trailing,
+    # ratchet or not.
     hot = make_candles(base=5.60, night_drops={1: 4.0, 2: 3.0})
     ev = sc.evaluate(dict(base, current_stop=4.7027), 5.60, hot)
     check("above the floor, the measured stop wins",
-          not ev["floored"] and ev["stop"] == ev["measured_stop"]
+          not ev["floored"] and not ev["ratcheted"]
+          and ev["stop"] == ev["measured_stop"]
           and ev["stop"] > ev["breakeven"], ev["stop"])
-
-    # Switch off: old behaviour.
-    try:
-        sc.BREAKEVEN_FLOOR = False
-        ev = sc.evaluate(dict(base, current_stop=4.7027), 4.60, calm)
-        check("floor can be switched off", not ev["floored"]
-              and ev["stop"] == ev["measured_stop"])
-    finally:
-        sc.BREAKEVEN_FLOOR = True
+    check("locked-and-trailing describe still names breakeven",
+          "is locked in" in sc.describe(ev, "x"))
 
     # Price back near breakeven with the floor on: explain, don't alarm.
     ev = {"price": 4.58, "stop": 4.5655, "current_stop": 4.5655,
           "running": False, "floored": True}
     r = sc.alert_reason(ev, False)
     check("floor near the market is explained", r and "breakeven" in r, r)
+
+
+def test_ratchet():
+    """Stops only move up (2026-09-28): never recommend below the live stop."""
+    base = {"symbol": "NEAR", "product": "NEAR-USD", "qty": 2500,
+            "avg_cost": 4.5129, "spread_pct": 0.98, "routing": "exchange",
+            "room_override_pct": None, "decimals": 4}
+    calm = make_candles(base=4.60, night_drops={1: 4.0, 2: 3.0})
+
+    # Below breakeven, the measurement (4.3272) comes in under the live stop:
+    # hold the live stop, and say nothing - there is nothing to change.
+    ev = sc.evaluate(dict(base, current_stop=4.35394), 4.60, calm)
+    check("measurement is below the live stop",
+          ev["measured_stop"] < 4.35394, ev["measured_stop"])
+    check("held at the live stop", ev["ratcheted"] and ev["stop"] == 4.35394,
+          ev["stop"])
+    check("risk is measured from the held stop",
+          near(ev["risk"], 2500 * (4.60 - 4.35394), 1e-6), ev["risk"])
+    check("a held stop is quiet", sc.alert_reason(ev, False) is None,
+          sc.alert_reason(ev, False))
+    text = sc.describe(ev, "x")
+    check("describe says HELD and shows the measurement",
+          "HELD at your live stop" in text and "4.3272" in text, text)
+    check("...and still says where the lock engages",
+          "locks in once price reaches" in text, text)
+
+    # The old advice was "too tight, lower it by 2.7% of price". Not any more.
+    ev = sc.evaluate(dict(base, current_stop=4.45), 4.60, calm)
+    check("no more 'too tight' alerts", ev["ratcheted"]
+          and sc.alert_reason(ev, False) is None, sc.alert_reason(ev, False))
+    try:
+        sc.RATCHET = False
+        ev = sc.evaluate(dict(base, current_stop=4.45), 4.60, calm)
+        r = sc.alert_reason(ev, False)
+        check("ratchet can be switched off", not ev["ratcheted"]
+              and ev["stop"] == ev["measured_stop"] and r and "too tight" in r,
+              r)
+    finally:
+        sc.RATCHET = True
+
+    # Raising still works: a stop well below the measurement is "too loose".
+    ev = sc.evaluate(dict(base, current_stop=4.10), 4.60, calm)
+    r = sc.alert_reason(ev, False)
+    check("raise advice survives", not ev["ratcheted"]
+          and ev["stop"] == ev["measured_stop"] and r and "too loose" in r, r)
+
+    # Above breakeven with the price slipping: the floor would say 4.5655,
+    # the ratchet holds the live 4.7027 instead, and both facts are shown.
+    ev = sc.evaluate(dict(base, current_stop=4.7027), 4.60, calm)
+    check("ratchet beats the floor",
+          ev["locked"] and ev["floored"] and ev["ratcheted"]
+          and ev["stop"] == 4.7027, ev["stop"])
+    text = sc.describe(ev, "x")
+    check("describe: held, and breakeven locked in",
+          "HELD at your live stop" in text and "is locked in" in text
+          and "FLOORED" not in text, text)
+
+    # Price has come down to the held stop: warn, but ask for nothing.
+    dip = make_candles(base=4.40, night_drops={1: 4.0, 2: 3.0})
+    ev = sc.evaluate(dict(base, current_stop=4.38), 4.40, dip)
+    r = sc.alert_reason(ev, False)
+    check("about-to-fire warning survives",
+          ev["ratcheted"] and r and "will fire" in r
+          and "nothing to change" in r, r)
+    check("it is not an action item", not sc.needs_action(r))
+    check("a stop at breakeven near the market keeps the floor wording",
+          "exits flat" in sc.alert_reason(
+              sc.evaluate(dict(base, current_stop=4.5655), 4.58,
+                          make_candles(base=4.58,
+                                       night_drops={1: 4.0, 2: 3.0})),
+              False))
+
+    # The property itself, across a slide: the recommendation never drops
+    # below the live stop, whatever the price does.
+    for price in (4.60, 4.50, 4.40, 4.30, 4.20):
+        c = make_candles(base=price, night_drops={1: 4.0, 2: 3.0})
+        for live in (4.10, 4.35394, 4.5655, 4.7027):
+            ev = sc.evaluate(dict(base, current_stop=live), price, c)
+            check(f"never below live ({live} @ {price})",
+                  ev["stop"] >= live, ev["stop"])
+
+    # Titles: only a plain "about to fire" batch drops the call to action.
+    fire = ({"symbol": "GRT"}, "price is back down at your stop - it will fire")
+    raise_ = ({"symbol": "SEI"}, "live stop too loose by 3.1% of price")
+    check("fire-only title", sc.alert_title([fire]) == "Stop about to fire: GRT",
+          sc.alert_title([fire]))
+    check("mixed batch keeps the update title",
+          sc.alert_title([fire, raise_]) == "Stops to update: GRT, SEI",
+          sc.alert_title([fire, raise_]))
+    check("'no stop set' is an action",
+          sc.needs_action("no stop set") and sc.needs_action(raise_[1]))
 
 
 def test_suppression():
