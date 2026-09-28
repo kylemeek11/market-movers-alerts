@@ -103,6 +103,18 @@
       "routing": "exchange",
       "sell_fee_pct": 0.75,
       "decimals": 5
+    },
+    {
+      "symbol": "XLM",
+      "product": "XLM-USD",
+      "qty": 5000,
+      "avg_cost": 0.225954,
+      "spread_pct": 0.98,
+      "current_stop": null,
+      "room_override_pct": 15,
+      "routing": "exchange",
+      "sell_fee_pct": 0.75,
+      "decimals": 6
     }
   ]
 }
