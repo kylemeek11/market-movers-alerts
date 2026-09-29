@@ -111,7 +111,7 @@
       "qty": 25000,
       "avg_cost": 0.042324,
       "spread_pct": 1.04,
-      "current_stop": null,
+      "current_stop": 0.035245,
       "room_override_pct": 15,
       "routing": "market_maker",
       "decimals": 6
@@ -122,7 +122,7 @@
       "qty": 5000,
       "avg_cost": 0.232456,
       "spread_pct": 1.02,
-      "current_stop": null,
+      "current_stop": 0.19401,
       "room_override_pct": 15,
       "routing": "exchange",
       "sell_fee_pct": 0.75,
