@@ -1,6 +1,6 @@
 {
   "_note": "Edit this when you buy, sell, or enter new stop orders. 'current_stop' is what you actually have live on Robinhood right now - set it to null if you have no stop on that coin, and the next run will tell you what to enter. 'spread_pct' is the 'Buy spread (x%)' figure from the coin's order ticket; it drifts slowly, so re-read it every few weeks. 'room_override_pct' forces a width instead of the measured one; leave null to let the script decide. 'routing' is how a sale executes: 'exchange' (Fee tiers on, itemized taker fee), 'market_maker' (spread in the price) or 'unknown' (treated as exchange). It sets the breakeven floor: once current_stop is at or above breakeven, the script never recommends a stop below it.",
-  "_updated": "2026-09-28",
+  "_updated": "2026-09-29",
   "positions": [
     {
       "symbol": "SHIB",
@@ -11,6 +11,7 @@
       "current_stop": 0.00000519,
       "room_override_pct": 12,
       "routing": "exchange",
+      "sell_fee_pct": 0.25,
       "decimals": 8
     },
     {
@@ -22,6 +23,19 @@
       "current_stop": 0.06962,
       "room_override_pct": 15,
       "routing": "exchange",
+      "sell_fee_pct": 0.25,
+      "decimals": 5
+    },
+    {
+      "symbol": "SEI#2",
+      "product": "SEI-USD",
+      "qty": 15000,
+      "avg_cost": 0.075573,
+      "spread_pct": 1.03,
+      "current_stop": null,
+      "room_override_pct": 15,
+      "routing": "exchange",
+      "sell_fee_pct": 0.25,
       "decimals": 5
     },
     {
@@ -44,52 +58,52 @@
       "current_stop": 0.1061,
       "room_override_pct": 15,
       "routing": "exchange",
-      "sell_fee_pct": 0.75,
+      "sell_fee_pct": 0.25,
       "decimals": 4
     },
     {
       "symbol": "LINK",
       "product": "LINK-USD",
-      "qty": 100,
-      "avg_cost": 15.0925,
+      "qty": 200,
+      "avg_cost": 15.18385,
       "spread_pct": 0.97,
-      "current_stop": 12.77,
+      "current_stop": null,
       "room_override_pct": 15,
       "routing": "exchange",
-      "sell_fee_pct": 0.75,
+      "sell_fee_pct": 0.25,
       "decimals": 2
     },
     {
       "symbol": "LDO",
       "product": "LDO-USD",
-      "qty": 2500,
-      "avg_cost": 0.456796,
+      "qty": 5000,
+      "avg_cost": 0.457458,
       "spread_pct": 1.03,
-      "current_stop": 0.3824,
+      "current_stop": null,
       "room_override_pct": 15,
       "routing": "exchange",
-      "sell_fee_pct": 0.75,
+      "sell_fee_pct": 0.25,
       "decimals": 5
     },
     {
       "symbol": "XLM",
       "product": "XLM-USD",
-      "qty": 5000,
-      "avg_cost": 0.225954,
+      "qty": 10000,
+      "avg_cost": 0.228519,
       "spread_pct": 0.98,
-      "current_stop": 0.194372,
+      "current_stop": null,
       "room_override_pct": 15,
       "routing": "exchange",
-      "sell_fee_pct": 0.75,
+      "sell_fee_pct": 0.25,
       "decimals": 6
     },
     {
       "symbol": "STRK",
       "product": "STRK-USD",
-      "qty": 25000,
-      "avg_cost": 0.042324,
+      "qty": 50000,
+      "avg_cost": 0.0430102,
       "spread_pct": 1.04,
-      "current_stop": 0.035245,
+      "current_stop": null,
       "room_override_pct": 15,
       "routing": "market_maker",
       "decimals": 6
@@ -97,13 +111,13 @@
     {
       "symbol": "SYRUP",
       "product": "SYRUP-USD",
-      "qty": 5000,
-      "avg_cost": 0.232456,
+      "qty": 10000,
+      "avg_cost": 0.232013,
       "spread_pct": 1.02,
-      "current_stop": 0.19401,
+      "current_stop": null,
       "room_override_pct": 15,
       "routing": "exchange",
-      "sell_fee_pct": 0.75,
+      "sell_fee_pct": 0.25,
       "decimals": 5
     }
   ]
