@@ -114,7 +114,7 @@
       "qty": 25000,
       "avg_cost": 0.0474284,
       "spread_pct": 1.11,
-      "current_stop": 0.0454,
+      "current_stop": 0.0485,
       "room_override_pct": 15,
       "routing": "exchange",
       "sell_fee_pct": 0.25,
