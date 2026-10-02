@@ -79,7 +79,7 @@
       "qty": 50000,
       "avg_cost": 0.0430102,
       "spread_pct": 1.04,
-      "current_stop": 0.036767,
+      "current_stop": 0.038693,
       "room_override_pct": 15,
       "routing": "market_maker",
       "decimals": 6
@@ -102,7 +102,7 @@
       "qty": 2000000,
       "avg_cost": 0.00053916,
       "spread_pct": 0.79,
-      "current_stop": 0.000423,
+      "current_stop": 0.000434,
       "room_override_pct": 15,
       "routing": "exchange",
       "sell_fee_pct": 0.25,
@@ -114,7 +114,7 @@
       "qty": 5000,
       "avg_cost": 0.126616,
       "spread_pct": 1.04,
-      "current_stop": 0.10554,
+      "current_stop": 0.10883,
       "room_override_pct": 15,
       "routing": "market_maker",
       "decimals": 5
@@ -137,7 +137,7 @@
       "qty": 10000,
       "avg_cost": 0.104537,
       "spread_pct": 1.02,
-      "current_stop": null,
+      "current_stop": 0.078109,
       "room_override_pct": 15,
       "routing": "market_maker",
       "decimals": 6
@@ -148,7 +148,7 @@
       "qty": 500,
       "avg_cost": 2.00672,
       "spread_pct": 1.05,
-      "current_stop": null,
+      "current_stop": 1.4943,
       "room_override_pct": 15,
       "routing": "exchange",
       "sell_fee_pct": 0.25,
@@ -160,7 +160,7 @@
       "qty": 10000,
       "avg_cost": 0.09474,
       "spread_pct": 1.08,
-      "current_stop": null,
+      "current_stop": 0.074144,
       "room_override_pct": 15,
       "routing": "market_maker",
       "decimals": 6
