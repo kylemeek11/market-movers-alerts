@@ -111,10 +111,10 @@
     {
       "symbol": "MEGA",
       "product": "MEGA-USD",
-      "qty": 125000,
-      "avg_cost": 0.0520266,
+      "qty": 25000,
+      "avg_cost": 0.0474284,
       "spread_pct": 1.11,
-      "current_stop": 0.04454,
+      "current_stop": 0.0485,
       "room_override_pct": 15,
       "routing": "exchange",
       "sell_fee_pct": 0.25,
@@ -129,6 +129,18 @@
       "current_stop": 0.10554,
       "room_override_pct": 15,
       "routing": "market_maker",
+      "decimals": 5
+    },
+    {
+      "symbol": "MEGA#2",
+      "product": "MEGA-USD",
+      "qty": 100000,
+      "avg_cost": 0.0531762,
+      "spread_pct": 1.11,
+      "current_stop": 0.04454,
+      "room_override_pct": 15,
+      "routing": "exchange",
+      "sell_fee_pct": 0.25,
       "decimals": 5
     }
   ]
