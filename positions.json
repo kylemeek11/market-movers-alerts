@@ -99,10 +99,10 @@
     {
       "symbol": "MEW",
       "product": "MEW-USD",
-      "qty": 1000000,
-      "avg_cost": 0.00057419,
+      "qty": 2000000,
+      "avg_cost": 0.00053916,
       "spread_pct": 0.79,
-      "current_stop": 0.000484,
+      "current_stop": 0.000423,
       "room_override_pct": 15,
       "routing": "exchange",
       "sell_fee_pct": 0.25,
@@ -111,10 +111,10 @@
     {
       "symbol": "MEGA",
       "product": "MEGA-USD",
-      "qty": 25000,
-      "avg_cost": 0.0474284,
+      "qty": 125000,
+      "avg_cost": 0.0520266,
       "spread_pct": 1.11,
-      "current_stop": 0.0485,
+      "current_stop": 0.04454,
       "room_override_pct": 15,
       "routing": "exchange",
       "sell_fee_pct": 0.25,
@@ -126,33 +126,9 @@
       "qty": 5000,
       "avg_cost": 0.126616,
       "spread_pct": 1.04,
-      "current_stop": null,
+      "current_stop": 0.10554,
       "room_override_pct": 15,
       "routing": "market_maker",
-      "decimals": 5
-    },
-    {
-      "symbol": "MEW#2",
-      "product": "MEW-USD",
-      "qty": 1000000,
-      "avg_cost": 0.00050413,
-      "spread_pct": 0.79,
-      "current_stop": null,
-      "room_override_pct": 15,
-      "routing": "exchange",
-      "sell_fee_pct": 0.25,
-      "decimals": 6
-    },
-    {
-      "symbol": "MEGA#2",
-      "product": "MEGA-USD",
-      "qty": 100000,
-      "avg_cost": 0.0531762,
-      "spread_pct": 1.11,
-      "current_stop": null,
-      "room_override_pct": 15,
-      "routing": "exchange",
-      "sell_fee_pct": 0.25,
       "decimals": 5
     }
   ]
