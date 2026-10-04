@@ -160,7 +160,7 @@
       "qty": 10000,
       "avg_cost": 0.09474,
       "spread_pct": 1.08,
-      "current_stop": 0.074144,
+      "current_stop": 0.077397,
       "room_override_pct": 15,
       "routing": "market_maker",
       "decimals": 6
