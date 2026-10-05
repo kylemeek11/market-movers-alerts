@@ -137,7 +137,7 @@
       "qty": 30000,
       "avg_cost": 0.105177,
       "spread_pct": 1.02,
-      "current_stop": 0.088198,
+      "current_stop": 0.089787,
       "room_override_pct": 15,
       "routing": "market_maker",
       "decimals": 6
@@ -145,10 +145,10 @@
     {
       "symbol": "ZRO",
       "product": "ZRO-USD",
-      "qty": 500,
-      "avg_cost": 2.00672,
+      "qty": 1000,
+      "avg_cost": 1.96543,
       "spread_pct": 1.05,
-      "current_stop": 1.7377,
+      "current_stop": 1.7587,
       "room_override_pct": 15,
       "routing": "exchange",
       "sell_fee_pct": 0.25,
@@ -248,18 +248,6 @@
       "decimals": 6
     },
     {
-      "symbol": "ZRO#2",
-      "product": "ZRO-USD",
-      "qty": 500,
-      "avg_cost": 1.92414,
-      "spread_pct": 1.05,
-      "current_stop": 1.6083,
-      "room_override_pct": 15,
-      "routing": "exchange",
-      "sell_fee_pct": 0.25,
-      "decimals": 4
-    },
-    {
       "symbol": "RAY#2",
       "product": "RAY-USD",
       "qty": 500,
@@ -289,6 +277,17 @@
       "avg_cost": 0.055341,
       "spread_pct": 1.04,
       "current_stop": 0.045707,
+      "room_override_pct": 15,
+      "routing": "market_maker",
+      "decimals": 6
+    },
+    {
+      "symbol": "STRK#3",
+      "product": "STRK-USD",
+      "qty": 30000,
+      "avg_cost": 0.052702,
+      "spread_pct": 1.04,
+      "current_stop": 0.043925,
       "room_override_pct": 15,
       "routing": "market_maker",
       "decimals": 6
