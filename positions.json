@@ -187,6 +187,18 @@
       "routing": "exchange",
       "sell_fee_pct": 0.25,
       "decimals": 5
+    },
+    {
+      "symbol": "ORCA",
+      "product": "ORCA-USD",
+      "qty": 500,
+      "avg_cost": 2.1143,
+      "spread_pct": 1.12,
+      "current_stop": 1.76545,
+      "room_override_pct": 15,
+      "routing": "exchange",
+      "sell_fee_pct": 0.25,
+      "decimals": 5
     }
   ]
 }
