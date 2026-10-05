@@ -168,10 +168,10 @@
     {
       "symbol": "RAY",
       "product": "RAY-USD",
-      "qty": 500,
-      "avg_cost": 2.11186,
+      "qty": 1000,
+      "avg_cost": 2.09977,
       "spread_pct": 0.99,
-      "current_stop": 1.75925,
+      "current_stop": 1.81145,
       "room_override_pct": 15,
       "routing": "market_maker",
       "decimals": 5
@@ -230,7 +230,7 @@
       "qty": 500,
       "avg_cost": 2.01102,
       "spread_pct": 1.12,
-      "current_stop": 1.69123,
+      "current_stop": 1.72722,
       "room_override_pct": 15,
       "routing": "exchange",
       "sell_fee_pct": 0.25,
@@ -246,17 +246,6 @@
       "room_override_pct": 15,
       "routing": "market_maker",
       "decimals": 6
-    },
-    {
-      "symbol": "RAY#2",
-      "product": "RAY-USD",
-      "qty": 500,
-      "avg_cost": 2.08768,
-      "spread_pct": 0.99,
-      "current_stop": 1.74113,
-      "room_override_pct": 15,
-      "routing": "market_maker",
-      "decimals": 5
     },
     {
       "symbol": "ADA",
