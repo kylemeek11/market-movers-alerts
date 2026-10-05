@@ -134,10 +134,10 @@
     {
       "symbol": "BAT",
       "product": "BAT-USD",
-      "qty": 10000,
-      "avg_cost": 0.104537,
+      "qty": 30000,
+      "avg_cost": 0.105177,
       "spread_pct": 1.02,
-      "current_stop": 0.087052,
+      "current_stop": 0.088198,
       "room_override_pct": 15,
       "routing": "market_maker",
       "decimals": 6
@@ -258,6 +258,17 @@
       "routing": "exchange",
       "sell_fee_pct": 0.25,
       "decimals": 4
+    },
+    {
+      "symbol": "RAY#2",
+      "product": "RAY-USD",
+      "qty": 500,
+      "avg_cost": 2.08768,
+      "spread_pct": 0.99,
+      "current_stop": 1.74113,
+      "room_override_pct": 15,
+      "routing": "market_maker",
+      "decimals": 5
     }
   ]
 }
