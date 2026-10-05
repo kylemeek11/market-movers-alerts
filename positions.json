@@ -199,6 +199,65 @@
       "routing": "exchange",
       "sell_fee_pct": 0.25,
       "decimals": 5
+    },
+    {
+      "symbol": "LINK#2",
+      "product": "LINK-USD",
+      "qty": 75,
+      "avg_cost": 14.125067,
+      "spread_pct": 0.97,
+      "current_stop": 11.86,
+      "room_override_pct": 15,
+      "routing": "exchange",
+      "sell_fee_pct": 0.25,
+      "decimals": 2
+    },
+    {
+      "symbol": "MEGA#2",
+      "product": "MEGA-USD",
+      "qty": 20000,
+      "avg_cost": 0.05031,
+      "spread_pct": 1.11,
+      "current_stop": 0.04237,
+      "room_override_pct": 15,
+      "routing": "exchange",
+      "sell_fee_pct": 0.25,
+      "decimals": 5
+    },
+    {
+      "symbol": "ORCA#2",
+      "product": "ORCA-USD",
+      "qty": 500,
+      "avg_cost": 2.01102,
+      "spread_pct": 1.12,
+      "current_stop": 1.69123,
+      "room_override_pct": 15,
+      "routing": "exchange",
+      "sell_fee_pct": 0.25,
+      "decimals": 5
+    },
+    {
+      "symbol": "SKY#2",
+      "product": "SKY-USD",
+      "qty": 10000,
+      "avg_cost": 0.097034,
+      "spread_pct": 1.08,
+      "current_stop": 0.080327,
+      "room_override_pct": 15,
+      "routing": "market_maker",
+      "decimals": 6
+    },
+    {
+      "symbol": "ZRO#2",
+      "product": "ZRO-USD",
+      "qty": 500,
+      "avg_cost": 1.92414,
+      "spread_pct": 1.05,
+      "current_stop": 1.6083,
+      "room_override_pct": 15,
+      "routing": "exchange",
+      "sell_fee_pct": 0.25,
+      "decimals": 4
     }
   ]
 }
