@@ -286,6 +286,23 @@ def recommend_room(p95, running, override=None):
     return room, reason
 
 
+RAISE_LOOKBACK_H = 12
+
+
+def raise_reference(price, candles):
+    """The price the trail is measured from: min(live, lowest close in the
+    last RAISE_LOOKBACK_H hourly candles). Never above the live price."""
+    closes = []
+    for c in (candles or [])[:RAISE_LOOKBACK_H]:
+        try:
+            closes.append(float(c[4]))
+        except (TypeError, ValueError, IndexError):
+            continue
+    if not closes:
+        return price
+    return min(price, min(closes))
+
+
 def stop_price(price, room_pct, spread_pct, decimals):
     raw = price * (1 - room_pct / 100.0) * (1 - spread_pct / 100.0)
     return round(raw, decimals)
@@ -332,7 +349,17 @@ def evaluate(pos, price, candles):
     room, reason = recommend_room(p95, running, pos.get("room_override_pct"))
     decimals = int(pos.get("decimals", 4))
     spread = float(pos["spread_pct"])
-    measured = stop_price(price, room, spread, decimals)
+    # RAISE REFERENCE (2026-10-06). Measure the trail from the lowest hourly
+    # close of the last RAISE_LOOKBACK_H hours, not from the live price. A
+    # spike then cannot pull the stop up into its own retrace zone. Hourly
+    # replay, 33 Robinhood coins, Aug 30-Oct 6 2026, 15% trail, 14-day hold:
+    # raise on every new high  +8.2%, 70% stopped out, 60% of those whipsaws
+    # raise on the 12h low    +12.8%, 35% stopped out  (same ranking in both
+    # halves of the window). ORCA 10-05: the live-price raise to 1.978 was
+    # taken out by a thin-book print at 1.968; the 12h-low raise would have
+    # left the stop at 1.861.
+    ref = raise_reference(price, candles)
+    measured = stop_price(ref, room, spread, decimals)
     breakeven = breakeven_stop(pos, decimals)
     live = pos.get("current_stop")
     # Locked = the stop he actually has entered already protects breakeven.
@@ -348,6 +375,7 @@ def evaluate(pos, price, candles):
     return {
         "symbol": pos["symbol"],
         "price": price,
+        "raise_ref": ref,
         "stop": stop,
         "measured_stop": measured,
         "breakeven": breakeven,
