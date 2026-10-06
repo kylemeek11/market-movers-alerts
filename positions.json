@@ -22,8 +22,7 @@
       "spread_pct": 1.03,
       "current_stop": 0.06355,
       "room_override_pct": 15,
-      "routing": "exchange",
-      "sell_fee_pct": 0.25,
+      "routing": "market_maker",
       "decimals": 5
     },
     {
@@ -57,8 +56,7 @@
       "spread_pct": 1.03,
       "current_stop": 0.40267,
       "room_override_pct": 15,
-      "routing": "exchange",
-      "sell_fee_pct": 0.25,
+      "routing": "market_maker",
       "decimals": 5
     },
     {
@@ -92,8 +90,7 @@
       "spread_pct": 1.02,
       "current_stop": 0.2142,
       "room_override_pct": 15,
-      "routing": "exchange",
-      "sell_fee_pct": 0.25,
+      "routing": "market_maker",
       "decimals": 5
     },
     {
@@ -104,8 +101,7 @@
       "spread_pct": 0.79,
       "current_stop": 0.000451,
       "room_override_pct": 15,
-      "routing": "exchange",
-      "sell_fee_pct": 0.25,
+      "routing": "market_maker",
       "decimals": 6
     },
     {
@@ -127,8 +123,7 @@
       "spread_pct": 1.11,
       "current_stop": 0.04454,
       "room_override_pct": 15,
-      "routing": "exchange",
-      "sell_fee_pct": 0.25,
+      "routing": "market_maker",
       "decimals": 5
     },
     {
@@ -184,8 +179,7 @@
       "spread_pct": 1.03,
       "current_stop": 0.48624,
       "room_override_pct": 15,
-      "routing": "exchange",
-      "sell_fee_pct": 0.25,
+      "routing": "market_maker",
       "decimals": 5
     },
     {
@@ -208,8 +202,7 @@
       "spread_pct": 1.11,
       "current_stop": 0.04237,
       "room_override_pct": 15,
-      "routing": "exchange",
-      "sell_fee_pct": 0.25,
+      "routing": "market_maker",
       "decimals": 5
     },
     {
