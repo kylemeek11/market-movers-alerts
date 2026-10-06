@@ -189,18 +189,6 @@
       "decimals": 5
     },
     {
-      "symbol": "ORCA",
-      "product": "ORCA-USD",
-      "qty": 1000,
-      "avg_cost": 2.06266,
-      "spread_pct": 1.12,
-      "current_stop": 1.97795,
-      "room_override_pct": 15,
-      "routing": "exchange",
-      "sell_fee_pct": 0.25,
-      "decimals": 5
-    },
-    {
       "symbol": "LINK#2",
       "product": "LINK-USD",
       "qty": 75,
