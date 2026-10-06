@@ -317,6 +317,11 @@ STOP_HINT_PCT = 15.0                   # the stop size the hint is sized for
 TOP_TIER_MAX_DAY_PCT = 10.0
 TOP_TIER_MIN_RELVOL = 5.0
 CAUTION_WEEK_PCT = 20.0
+# LATE (2026-10-05 top-movers study, 150 days, 82 Robinhood coins): a coin
+# already up 30%+ on the day went on to hit -15% before +20% in 63% of cases,
+# with a median 7-day return of -17% (n=16 - small, so a warning, not a ban).
+# Days of 15-30% were a coin flip (32% run first / 34% stop first).
+LATE_DAY_PCT = 30.0
 
 MARKET_TZ = "America/New_York"
 MARKET_OPEN_HOUR = 8
@@ -1217,6 +1222,9 @@ def tier_lines(r, rv, first):
     if week is not None and week >= CAUTION_WEEK_PCT:
         lines.append(f"caution: already up {week:.0f}% on the week - alerts like "
                      f"this averaged a loss (the rare monster excepted)")
+    if r.get("kind") == "crypto" and day is not None and day >= LATE_DAY_PCT:
+        lines.append(f"LATE: already up {day:.0f}% today - coins past +{LATE_DAY_PCT:.0f}% "
+                     f"hit -15% before +20% about 2 times in 3")
     return top, lines
 
 
