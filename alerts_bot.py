@@ -25,6 +25,15 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+# The daily checklist (tight-base breakouts, BTC red lights, volatility flag,
+# Bitstamp depth, overnight pass for green signals) lives in its own module.
+# Optional on purpose: if the file is missing, every alert still goes out
+# exactly as before, just without the extra lines and the breakout alert.
+try:
+    import daily_context as dc
+except Exception:                      # ImportError, or a broken upload
+    dc = None
+
 # --- Stock settings (match market_movers.py) --------------------------------
 MIN_GAIN_PCT = 5.0
 MIN_DOLLAR_VOLUME = 25_000_000
@@ -1251,15 +1260,62 @@ def tag_lines(state, key, now_ts, count_today=True):
     return out
 
 
+def context_lines(state, r, btc_price=None, now_ts=None):
+    """The daily-checklist lines for one crypto alert (daily_context.py):
+    BTC red lights, the volatility flag, the deep-dip test and Bitstamp depth
+    for the stop's routing. Empty for stocks, without state, or without the
+    module. Never raises - a data problem costs the lines, not the alert."""
+    if dc is None or state is None or r.get("kind") != "crypto":
+        return []
+    out = []
+    try:
+        out.extend(dc.context_lines(state, r, btc_price, now_ts))
+        # The Bitstamp line costs a request, so it is only looked up once the
+        # daily picture exists (main() builds it before any alert is sent).
+        line = (dc.thin_book_line(state, r["symbol"], now_ts, log=log)
+                if state.get("daily") is not None else None)
+        if line:
+            out.append(line)
+    except Exception as exc:
+        log(f"  daily context lines failed for {r.get('symbol')} ({exc})")
+    return out
+
+
+def green_pass(state, now_ts):
+    """Overnight: may a green signal (TOP SETUP, BASE BREAKOUT) go out?
+
+    Runs start overnight (47% begin 9pm-6am CT) and these are the alerts the
+    checklist says to act on, so they are not held until morning - but at
+    most NIGHT_PASS_MAX per night, so a lively night cannot wreck his sleep.
+    Without the module, nothing passes (the old behaviour).
+    """
+    if dc is None or state is None:
+        return False
+    try:
+        return dc.night_pass(state, now_ts)
+    except Exception:
+        return False
+
+
 def send_rate(pending, fired, now_ts, overnight, night_bar=OVERNIGHT_RATE_PCT,
-              state=None):
+              state=None, btc_price=None):
     held = 0
     for fkey, r, move, elapsed_min, rv in pending[:MAX_ALERTS_PER_RUN]:
+        # First buzz or a repeat, and the star, are worked out BEFORE the
+        # overnight decision because a TOP SETUP is allowed through it. Both
+        # are pure reads; the send log is only written once the alert goes.
+        key = f"{r['kind']}:{r['symbol']}"
+        first = alerts_so_far_today(state, key, now_ts) == 0
+        top, tiers = tier_lines(r, rv, first)
+
         # Overnight, only a genuine run is worth waking him for. Compared
         # against the RATE bar, not the day threshold - see OVERNIGHT_RATE_PCT
         # for what that mistake cost. Held signals are deliberately not
-        # recorded, so a run still going at breakfast alerts again.
-        if overnight and move < night_bar:
+        # recorded, so a run still going at breakfast alerts again. A TOP
+        # SETUP passes (see green_pass) - it is the one rate alert the
+        # checklist calls a buy, and the move it reports usually began hours
+        # before anyone is awake.
+        if overnight and move < night_bar and not (top and green_pass(state, now_ts)):
             held += 1
             continue
         fired[fkey] = now_ts
@@ -1275,13 +1331,10 @@ def send_rate(pending, fired, now_ts, overnight, night_bar=OVERNIGHT_RATE_PCT,
             day += f"  -  +{off_low:.0f}% off 24h low"
         lines.append(day)
 
-        # First buzz or a repeat, and whether this name has been at it for
-        # days. The replay says these matter more than the volume multiple.
-        key = f"{r['kind']}:{r['symbol']}"
-        first = alerts_so_far_today(state, key, now_ts) == 0
+        # The replay says first-vs-repeat matters more than the volume multiple.
         lines.extend(tag_lines(state, key, now_ts))
-        top, tiers = tier_lines(r, rv, first)
         lines.extend(tiers)
+        lines.extend(context_lines(state, r, btc_price, now_ts))
 
         if r["kind"] == "crypto":
             breakeven, stop = cost_hints(r["price"])
@@ -1361,7 +1414,7 @@ def collect_pending(rows, levels, fired, prefix):
     return pending
 
 
-def send_alerts(pending, fired, high_level, overnight, state=None):
+def send_alerts(pending, fired, high_level, overnight, state=None, btc_price=None):
     sent, held = 0, 0
     for level, key, r in pending[:MAX_ALERTS_PER_RUN]:
         if overnight and level < high_level:
@@ -1375,12 +1428,13 @@ def send_alerts(pending, fired, high_level, overnight, state=None):
         body = format_body(r)
         # A threshold crossing counts toward the multi-day memory but not the
         # within-day tally - each level fires once a day by construction.
-        extra = tag_lines(state, f"{r['kind']}:{r['symbol']}",
-                          datetime.now(timezone.utc).timestamp(),
+        now_ts = datetime.now(timezone.utc).timestamp()
+        extra = tag_lines(state, f"{r['kind']}:{r['symbol']}", now_ts,
                           count_today=False)
         # A threshold alert is late-stage by definition; still say so when the
         # whole week is already in the price.
         extra += tier_lines(r, None, False)[1]
+        extra += context_lines(state, r, btc_price, now_ts)
         if extra:
             body += "\n" + "\n".join(extra)
         push(f"{r['symbol']} crossed +{level:.0f}%",
@@ -1420,7 +1474,92 @@ def send_dip(coin, st, price):
         f"+{st['off_low']:.1f}% off 12h low")
 
 
-def run_watchlist(crypto_rows, marks, fired, now_ts, overnight, state=None):
+def send_breakouts(pending, fired, now_ts, overnight, state=None, btc_price=None):
+    """BASE BREAKOUT alerts - the checklist's other green light.
+
+    `pending` comes from daily_context.collect_breakouts: coins whose prior
+    14 daily closes sat in a 15% range, up 5%+ today, above the 50-day
+    average, on a weekday. One alert per coin per UTC day. Red lines from the
+    checklist (BTC, hot week, LATE, deep dip) travel with it, and when any is
+    present the title loses its star: the setup is right but the day is not.
+    """
+    if dc is None:
+        return
+    held = 0
+    for key, r, ctx in pending[:MAX_ALERTS_PER_RUN]:
+        if overnight and not green_pass(state, now_ts):
+            held += 1
+            continue
+        fired[key] = dc.utc_day(now_ts)
+
+        lines = [f"{r['name']}  -  {money(r['price'])}"]
+        lines.extend(dc.breakout_lines(r, ctx))
+        k = f"{r['kind']}:{r['symbol']}"
+        lines.extend(tag_lines(state, k, now_ts))
+        lines.extend(tier_lines(r, None, False)[1])     # small coin, hot week, LATE
+        lines.extend(context_lines(state, r, btc_price, now_ts))
+        breakeven, stop = cost_hints(r["price"])
+        lines.append(f"break-even {money(breakeven)}  -  "
+                     f"{STOP_HINT_PCT:.0f}% stop {money(stop)}")
+
+        red = any(ln.startswith(("RED", "caution", "LATE")) for ln in lines)
+        title = f"{r['symbol']} base breakout +{ctx['day_pct']:.1f}% today"
+        if not red:
+            title = "* " + title
+        push(title, "\n".join(lines),
+             priority="max" if overnight else "high",
+             tags="zap" if red else "star",
+             click=robinhood_url(r))
+        log(f"  BREAKOUT {r['symbol']} +{ctx['day_pct']:.1f}% today from a "
+            f"{ctx['base14']:.0f}% base, {ctx['vs50_pct']:+.0f}% vs 50-day"
+            f"{' (red lines)' if red else ''}")
+    if held:
+        log(f"  {held} base breakouts held - overnight cap reached")
+
+
+def run_breakouts(crypto_rows, fired, now_ts, overnight, state, tradable, btc_price):
+    """The breakout check end to end. Never fatal to the main alerts."""
+    if dc is None:
+        return
+    try:
+        raw = dc.collect_breakouts(state, crypto_rows, fired, now_ts)
+        pending = filter_tradable(raw, tradable, 1)
+        if raw:
+            dropped = len(raw) - len(pending)
+            log(f"{len(pending)} base breakouts"
+                + (f" ({dropped} dropped - not on Robinhood)" if dropped else ""))
+        send_breakouts(pending, fired, now_ts, overnight, state, btc_price)
+    except Exception as exc:
+        log(f"  base breakout check failed ({exc}) - main alerts unaffected")
+
+
+def refresh_daily_context(state, crypto_rows, now_ts):
+    """Top up the once-a-day picture of every coin. Never fatal."""
+    if dc is None:
+        log("  daily_context.py not present - checklist lines and breakouts off")
+        return
+    try:
+        dc.refresh(state, crypto_rows, now_ts, log=log)
+        daily = state.get("daily") or {}
+        today = dc.utc_day(now_ts)
+        fresh = [s for s, e in daily.items()
+                 if not s.startswith("_") and e.get("d") == today and not e.get("short")]
+        coiled = []
+        for r in crypto_rows:
+            ctx = dc.coin_context(daily.get(r["symbol"]), r["price"], today)
+            if (ctx and ctx.get("base14") is not None
+                    and ctx["base14"] <= dc.BASE_RANGE_MAX_PCT
+                    and (ctx.get("vs50_pct") or 0) > 0):
+                coiled.append(r["symbol"])
+        log(f"  daily context for {len(fresh)} of {len(crypto_rows)} coins; "
+            f"{len(coiled)} on a tight base above the 50-day"
+            + (f": {', '.join(sorted(coiled)[:12])}" if coiled else ""))
+    except Exception as exc:
+        log(f"  daily context refresh failed ({exc}) - alerts unaffected")
+
+
+def run_watchlist(crypto_rows, marks, fired, now_ts, overnight, state=None,
+                  btc_price=None):
     """Closer scrutiny for the coins in watchlist.json. Never fatal."""
     try:
         import watchlist as wl
@@ -1440,7 +1579,7 @@ def run_watchlist(crypto_rows, marks, fired, now_ts, overnight, state=None):
         if early:
             log(f"  watchlist: {len(early)} early climbs at "
                 f"{wl.WATCH_RATE_PCT:g}%")
-        send_rate(early, fired, now_ts, overnight, state=state)
+        send_rate(early, fired, now_ts, overnight, state=state, btc_price=btc_price)
         wl.check_dips(coins, {r["symbol"]: r["price"] for r in rows},
                       fired, now_ts, overnight, send_dip, log=log)
     except Exception as exc:
@@ -1481,6 +1620,11 @@ def main():
         f"{len(crypto_movers)} in alert range")
     record_marks(crypto_rows, marks, now_ts)
 
+    # The daily picture behind the checklist lines and the breakout alert.
+    # BTC's live price anchors the "BTC down N%" lines.
+    btc_price = next((r["price"] for r in crypto_rows if r["symbol"] == "BTC"), None)
+    refresh_daily_context(state, crypto_rows, now_ts)
+
     # Rate of change first: it is the earliest signal, so it wins the run cap.
     craw, cquiet, cunknown = collect_rate(crypto_rows, marks, fired, now_ts,
                                           CRYPTO_RATE_PCT, state["cb_missing"])
@@ -1504,16 +1648,19 @@ def main():
         dropped = len(craw) - len(crate)
         log(f"{len(crate)} coins climbing fast enough to flag"
             + (f" ({dropped} dropped - not on Robinhood)" if dropped else ""))
-    send_rate(crate, fired, now_ts, overnight, state=state)
+    send_rate(crate, fired, now_ts, overnight, state=state, btc_price=btc_price)
     log(rate_bars(crypto_rows, marks, now_ts))
-    run_watchlist(crypto_rows, marks, fired, now_ts, overnight, state)
+    run_watchlist(crypto_rows, marks, fired, now_ts, overnight, state, btc_price)
+    # Tight-base breakouts: the checklist's second green light, independent
+    # of the rate signal's volume gate.
+    run_breakouts(crypto_rows, fired, now_ts, overnight, state, tradable, btc_price)
 
     crypto_pending = filter_tradable(
         collect_pending(crypto_movers, CRYPTO_ALERT_LEVELS, fired, "crypto"),
         tradable, 2)
     log(f"{len(crypto_pending)} new tradable crypto threshold crossings")
     send_alerts(crypto_pending, fired, CRYPTO_HIGH_PRIORITY_LEVEL, overnight,
-                state=state)
+                state=state, btc_price=btc_price)
 
     # --- Stocks: market hours only ---
     if force or market_is_open():
