@@ -143,10 +143,9 @@
       "qty": 1000,
       "avg_cost": 1.96543,
       "spread_pct": 1.05,
-      "current_stop": 1.7587,
+      "current_stop": 1.8501,
       "room_override_pct": 15,
-      "routing": "exchange",
-      "sell_fee_pct": 0.25,
+      "routing": "market_maker",
       "decimals": 4
     },
     {
