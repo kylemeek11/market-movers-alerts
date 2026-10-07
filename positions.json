@@ -6,9 +6,9 @@
       "symbol": "SHIB",
       "product": "SHIB-USD",
       "qty": 300000000,
-      "avg_cost": 0.0000068029,
+      "avg_cost": 6.8029e-06,
       "spread_pct": 0.93,
-      "current_stop": 0.00000496,
+      "current_stop": 4.96e-06,
       "room_override_pct": 15,
       "routing": "exchange",
       "sell_fee_pct": 0.25,
@@ -72,17 +72,6 @@
       "decimals": 6
     },
     {
-      "symbol": "STRK",
-      "product": "STRK-USD",
-      "qty": 50000,
-      "avg_cost": 0.0430102,
-      "spread_pct": 1.04,
-      "current_stop": 0.049519,
-      "room_override_pct": 15,
-      "routing": "market_maker",
-      "decimals": 6
-    },
-    {
       "symbol": "SYRUP",
       "product": "SYRUP-USD",
       "qty": 10000,
@@ -111,17 +100,6 @@
       "avg_cost": 0.126616,
       "spread_pct": 1.04,
       "current_stop": 0.11077,
-      "room_override_pct": 15,
-      "routing": "market_maker",
-      "decimals": 5
-    },
-    {
-      "symbol": "MEGA",
-      "product": "MEGA-USD",
-      "qty": 100000,
-      "avg_cost": 0.0531762,
-      "spread_pct": 1.11,
-      "current_stop": 0.04454,
       "room_override_pct": 15,
       "routing": "market_maker",
       "decimals": 5
