@@ -180,7 +180,7 @@ marks, fired = {}, {}
 runner = {"kind": "crypto", "symbol": "RUN2", "name": "Runner", "price": 100.0,
           "pct": 1.0, "dollars": 5e7, "hour_pct": None}
 fires = []
-for i in range(0, 200, 8):
+for i in range(0, 400, 8):
     now = t0 + i * 60
     runner["price"] = 100.0 * (1 + 0.001 * i)     # +0.1%/min, a steady climb
     runner["dollars"] = 5e7 * (1 + 0.005 * i)     # and on rising volume
@@ -191,8 +191,8 @@ for i in range(0, 200, 8):
 check("a steady climb fires", len(fires) >= 1, fires)
 check("first fire once the window has history", fires and fires[0] >= 48, fires)
 gaps = [b - a for a, b in zip(fires, fires[1:])]
-check("never re-alerts inside the 45-minute cooldown",
-      all(g >= 45 for g in gaps), gaps)
+check("never re-alerts inside the 3-hour cooldown",
+      all(g >= 180 for g in gaps), gaps)
 check("but does re-alert while it keeps climbing", len(fires) >= 2, fires)
 
 universe = [{"symbol": f"C{i}"} for i in range(100)]
@@ -752,6 +752,49 @@ top, lines = ab.tier_lines(crow(cap=5e8), 2.6, False)
 check("larger coins do not", not any("small coin" in l for l in lines), lines)
 top, lines = ab.tier_lines({"kind": "stock", "symbol": "S", "pct": 3.0, "cap": 1e7}, 6.0, True)
 check("stocks never get the crypto small-coin line", not any("small coin" in l for l in lines), lines)
+
+# --- A failed crypto screen is an outage, not a quiet market (2026-10-07) ---
+# The 11:08 UTC run on 10-07 logged "crypto screener failed: HTTP Error 429"
+# and then read as a healthy, quiet run: "tracking 0 liquid coins", "daily
+# context for 82 of 0 coins", and a watchlist line claiming BTC was not
+# tradable. screen_crypto now returns None so the caller can tell the two
+# apart.
+def raising_urlopen(*a, **k):
+    raise urllib.error.HTTPError("u", 429, "Too Many Requests", None, None)
+
+_real = urllib.request.urlopen
+urllib.request.urlopen = raising_urlopen
+try:
+    failed = ab.screen_crypto(None)
+finally:
+    urllib.request.urlopen = _real
+check("a screen that could not be read returns None, not an empty universe",
+      failed is None, failed)
+check("a broken screen payload returns None too",
+      with_urlopen({"nope": 1}, lambda: ab.screen_crypto(None)) is None)
+
+st = {"screen_fails": 0}
+sent_pushes = []
+_rp = ab.push
+ab.push = lambda title, message, **kw: sent_pushes.append((title, kw))
+try:
+    n1 = ab.crypto_screen_failed(st)
+    n2 = ab.crypto_screen_failed(st)
+    check("the failure streak counts up", (n1, n2) == (1, 2), (n1, n2))
+    check("no push before the streak is reached", sent_pushes == [], sent_pushes)
+    n3 = ab.crypto_screen_failed(st)
+    check("pushes once when the streak is reached",
+          n3 == ab.SCREEN_FAIL_ALERT_RUNS and len(sent_pushes) == 1
+          and sent_pushes[0][1].get("priority") == "high", sent_pushes)
+    ab.crypto_screen_failed(st)
+    check("and not again while the outage lasts", len(sent_pushes) == 1, sent_pushes)
+    ab.crypto_screen_recovered(st)
+    check("recovery clears the streak", st["screen_fails"] == 0, st)
+    ab.crypto_screen_failed(st)
+    check("a later outage can push again",
+          st["screen_fails"] == 1 and len(sent_pushes) == 1, st)
+finally:
+    ab.push = _rp
 
 print()
 if FAILURES:

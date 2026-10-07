@@ -335,8 +335,18 @@ state["daily"]["BTC"]["prev_close"] = 85000.0
 SENT.clear()
 state["daily"]["HYPE"]["vol30"] = 6.4
 ab.send_alerts([(15.0, "crypto:HYPE", dict(hype, pct=16.0))], {}, ab.CRYPTO_HIGH_PRIORITY_LEVEL,
-               False, state=state, btc_price=85500.0)
+               False, state=state, btc_price=85500.0, now_ts=NOW)
 check("threshold alert carries the volatility flag", SENT and "half size" in SENT[0][1], SENT[:1])
+# Regression (2026-10-07): send_alerts used to re-read the clock instead of
+# taking the run's. The daily cache is keyed by UTC day, so on any day but
+# the one NOW is pinned to, coin_context saw a stale entry and every
+# checklist line vanished from threshold alerts - and this suite only
+# passed on 2026-10-06.
+SENT.clear()
+ab.send_alerts([(15.0, "crypto:HYPE", dict(hype, pct=16.0))], {}, ab.CRYPTO_HIGH_PRIORITY_LEVEL,
+               False, state=state, btc_price=85500.0, now_ts=NOW + 86400)
+check("a threshold alert a day later drops the stale checklist lines",
+      SENT and "half size" not in SENT[0][1], SENT[:1])
 
 # Overnight breakout: passes, then the cap holds it.
 state["night_pass"] = {}

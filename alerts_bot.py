@@ -181,7 +181,15 @@ STOCK_RATE_PCT = 3.0            # stocks: same bar
 # Coinbase's own volume put them at 5.4x and 3.5x - so the effective bar is
 # somewhat looser than the number suggests.
 RATE_MIN_RELVOL = 2.5           # window volume vs the name's own normal pace
-RATE_COOLDOWN_SEC = 45 * 60     # re-alert the same name at most this often
+# COOLDOWN (raised 45min -> 3h on 2026-10-07). The 09-27 replay bucket above
+# is defined over 3 hours - first alert for a coin in 3h averaged +3.0% (47%
+# positive), a repeat inside that window -0.1% (38%), a third or later -0.9%
+# - so the cooldown now matches the window the edge was measured in. The
+# live 10-07 session reproduced it on one coin: RAY's 06:28 alert had +10.6%
+# still to come, and its 07:13 / 08:03 / 08:48 repeats had +6.9 / +3.4 / +1.0
+# and finished negative. Position management while already holding comes from
+# the stop-check workflow, not from re-buzzing the entry signal.
+RATE_COOLDOWN_SEC = 3 * 3600    # re-alert the same name at most this often
 RATE_MARKS_KEPT = 24            # enough stamps to span the window with drift
 
 # WHERE THE VOLUME FIGURE COMES FROM (2026-09-27). CoinGecko's counter is a
@@ -335,6 +343,14 @@ LATE_DAY_PCT = 30.0
 MARKET_TZ = "America/New_York"
 MARKET_OPEN_HOUR = 8
 MARKET_CLOSE_HOUR = 17
+
+# A failed crypto screen is an outage, not a quiet market (2026-10-07). The
+# 11:08 UTC run that day logged "crypto screener failed: HTTP Error 429" and
+# then "tracking 0 liquid coins" / "daily context for 82 of 0 coins" / a
+# watchlist line claiming BTC was not tradable - a run that reads as healthy
+# and quiet. One 429 recovers on the next tick; a sustained one silences every
+# crypto alert, so say so after this many consecutive failures (~5 min each).
+SCREEN_FAIL_ALERT_RUNS = 3
 
 # Overnight the bot does the filtering, because the phone cannot. iOS lets you
 # allow an app through a Focus, but it is all-or-nothing - notification
@@ -603,16 +619,21 @@ def missing_robinhood(coins, allowed):
 
 def screen_crypto(allowed=None):
     """Top coins by market cap plus every other Robinhood coin, filtered to
-    what is liquid and buyable."""
+    what is liquid and buyable.
+
+    Returns None - NOT [] - when the screen could not be read at all, so the
+    caller can tell "the universe is unknown this run" from "nothing
+    qualified". See SCREEN_FAIL_ALERT_RUNS.
+    """
     try:
         coins = _coingecko(COINGECKO_URL)
     except Exception as exc:
         log(f"  crypto screener failed: {exc}")
-        return []
+        return None
 
     if not isinstance(coins, list):
         log("  crypto screener returned an unexpected payload")
-        return []
+        return None
 
     if CRYPTO_FETCH_MISSING_RH:
         missing = missing_robinhood(coins, allowed)
@@ -701,6 +722,7 @@ def fresh_state(today, streak=None, alerts_today=None):
             # midnight-UTC reset (7pm Central) so "today" in the alert means
             # Kyle's day, not GitHub's; alert_count_line filters by local date.
             "alerts_today": alerts_today or {},
+            "screen_fails": 0,         # consecutive failed crypto screens
             "streak": streak or {}}    # name -> {first, last, days}; survives the reset
 
 
@@ -714,6 +736,7 @@ def load_state():
             state.setdefault("rh_symbols", None)
             state.setdefault("cb_missing", {})
             state.setdefault("alerts_today", {})
+            state.setdefault("screen_fails", 0)
             state.setdefault("streak", {})
             if state.get("gate") != GATE_VERSION:
                 log("  tradability cache came from an older gate - clearing")
@@ -1163,6 +1186,15 @@ def rate_bars(rows, marks, now_ts):
     Ignores cooldown and tradability on purpose: this is the raw shape of the
     market this minute, not a count of alerts that would have gone out. The
     only honest way to move the bars is to watch these for a few days.
+
+    CAVEAT, and it matters when reading the volume columns for tuning: these
+    use relative_volume() - the CoinGecko 24h-derived figure for coins, the
+    averageDailyVolume pace for stocks - NOT the Coinbase window figure the
+    gate itself applies. Calling Coinbase for every tracked name every run
+    would be ~90 requests a run, which is why the gate only asks for names
+    already over the price bar. So "volume 5x:1" is not the same measurement
+    as "on 5.1x volume" in an alert body, and the two should not be compared
+    directly.
     """
     bars = (1.5, 2.0, 2.5, 3.0, 4.0, 6.0)
     vbars = (2.0, 3.0, 5.0, 8.0)
@@ -1414,7 +1446,8 @@ def collect_pending(rows, levels, fired, prefix):
     return pending
 
 
-def send_alerts(pending, fired, high_level, overnight, state=None, btc_price=None):
+def send_alerts(pending, fired, high_level, overnight, state=None, btc_price=None,
+                now_ts=None):
     sent, held = 0, 0
     for level, key, r in pending[:MAX_ALERTS_PER_RUN]:
         if overnight and level < high_level:
@@ -1428,7 +1461,10 @@ def send_alerts(pending, fired, high_level, overnight, state=None, btc_price=Non
         body = format_body(r)
         # A threshold crossing counts toward the multi-day memory but not the
         # within-day tally - each level fires once a day by construction.
-        now_ts = datetime.now(timezone.utc).timestamp()
+        # Use the run's clock: the daily-context cache is keyed by UTC day, so
+        # re-reading it here can land on the other side of midnight from the
+        # rest of the run and drop every checklist line.
+        now_ts = now_ts if now_ts is not None else datetime.now(timezone.utc).timestamp()
         extra = tag_lines(state, f"{r['kind']}:{r['symbol']}", now_ts,
                           count_today=False)
         # A threshold alert is late-stage by definition; still say so when the
@@ -1533,6 +1569,37 @@ def run_breakouts(crypto_rows, fired, now_ts, overnight, state, tradable, btc_pr
         log(f"  base breakout check failed ({exc}) - main alerts unaffected")
 
 
+def crypto_screen_failed(state):
+    """Record a run where the coin universe could not be read.
+
+    Skipping the crypto stages matters less than saying so: an empty universe
+    cannot produce an alert anyway, but it CAN produce a run that looks quiet
+    and healthy. Pushes once, when the streak reaches SCREEN_FAIL_ALERT_RUNS,
+    not on every run of a long outage.
+    """
+    n = int(state.get("screen_fails") or 0) + 1
+    state["screen_fails"] = n
+    log(f"  the coin universe is unknown this run, not empty - crypto stages "
+        f"skipped ({n} run{'' if n == 1 else 's'} in a row)")
+    if n == SCREEN_FAIL_ALERT_RUNS:
+        push("Crypto screen down",
+             f"The coin screen has failed {n} runs in a row (about "
+             f"{n * 5} minutes). No crypto alert can fire until it recovers. "
+             f"Usually CoinGecko rate-limiting, which normally clears itself; "
+             f"if it does not, check the run log.",
+             priority="high", tags="warning")
+    return n
+
+
+def crypto_screen_recovered(state):
+    """Clear the failure streak, and say so if there was one worth noting."""
+    n = int(state.get("screen_fails") or 0)
+    if n:
+        log(f"  coin screen recovered after {n} failed "
+            f"run{'' if n == 1 else 's'}")
+    state["screen_fails"] = 0
+
+
 def refresh_daily_context(state, crypto_rows, now_ts):
     """Top up the once-a-day picture of every coin. Never fatal."""
     if dc is None:
@@ -1615,15 +1682,23 @@ def main():
             state["rh_symbols"] = allowed
             log(f"  Robinhood lists {len(allowed)} tradable coins")
     crypto_rows = screen_crypto(set(allowed) if allowed else None)
+    screen_down = crypto_rows is None
+    if screen_down:
+        crypto_rows = []
+        crypto_screen_failed(state)
+    else:
+        crypto_screen_recovered(state)
     crypto_movers = [r for r in crypto_rows if r.get("candidate")]
-    log(f"tracking {len(crypto_rows)} liquid coins, "
-        f"{len(crypto_movers)} in alert range")
+    if not screen_down:
+        log(f"tracking {len(crypto_rows)} liquid coins, "
+            f"{len(crypto_movers)} in alert range")
     record_marks(crypto_rows, marks, now_ts)
 
     # The daily picture behind the checklist lines and the breakout alert.
     # BTC's live price anchors the "BTC down N%" lines.
     btc_price = next((r["price"] for r in crypto_rows if r["symbol"] == "BTC"), None)
-    refresh_daily_context(state, crypto_rows, now_ts)
+    if not screen_down:
+        refresh_daily_context(state, crypto_rows, now_ts)
 
     # Rate of change first: it is the earliest signal, so it wins the run cap.
     craw, cquiet, cunknown = collect_rate(crypto_rows, marks, fired, now_ts,
@@ -1649,18 +1724,24 @@ def main():
         log(f"{len(crate)} coins climbing fast enough to flag"
             + (f" ({dropped} dropped - not on Robinhood)" if dropped else ""))
     send_rate(crate, fired, now_ts, overnight, state=state, btc_price=btc_price)
-    log(rate_bars(crypto_rows, marks, now_ts))
-    run_watchlist(crypto_rows, marks, fired, now_ts, overnight, state, btc_price)
+    if not screen_down:
+        log(rate_bars(crypto_rows, marks, now_ts))
+    if not screen_down:
+        run_watchlist(crypto_rows, marks, fired, now_ts, overnight, state,
+                      btc_price)
     # Tight-base breakouts: the checklist's second green light, independent
     # of the rate signal's volume gate.
-    run_breakouts(crypto_rows, fired, now_ts, overnight, state, tradable, btc_price)
+    if not screen_down:
+        run_breakouts(crypto_rows, fired, now_ts, overnight, state, tradable,
+                      btc_price)
 
     crypto_pending = filter_tradable(
         collect_pending(crypto_movers, CRYPTO_ALERT_LEVELS, fired, "crypto"),
         tradable, 2)
-    log(f"{len(crypto_pending)} new tradable crypto threshold crossings")
+    if not screen_down:
+        log(f"{len(crypto_pending)} new tradable crypto threshold crossings")
     send_alerts(crypto_pending, fired, CRYPTO_HIGH_PRIORITY_LEVEL, overnight,
-                state=state, btc_price=btc_price)
+                state=state, btc_price=btc_price, now_ts=now_ts)
 
     # --- Stocks: market hours only ---
     if force or market_is_open():
@@ -1713,7 +1794,7 @@ def main():
             collect_pending(movers, ALERT_LEVELS, fired, "stock"), tradable, 2)
         log(f"{len(stock_pending)} new tradable stock threshold crossings")
         send_alerts(stock_pending, fired, HIGH_PRIORITY_LEVEL, overnight,
-                    state=state)
+                    state=state, now_ts=now_ts)
     else:
         log("Outside market hours - skipping the stock screen")
 
