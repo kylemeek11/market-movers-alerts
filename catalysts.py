@@ -29,10 +29,12 @@ coming", never as "this will go up."
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import os
 import sys
 import time
+import zlib
 import urllib.parse
 import urllib.request
 from datetime import date, datetime, timedelta, timezone
@@ -48,7 +50,8 @@ NTFY_SERVER = os.environ.get("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
 # The SEC asks for a contact address in the User-Agent and will throttle or
 # block requests without one. This is not optional politeness; it is their
 # stated access policy.
-SEC_UA = os.environ.get("SEC_USER_AGENT", "MarketMovers catalyst watcher")
+SEC_UA = (os.environ.get("SEC_USER_AGENT", "").strip()
+          or "MarketMovers catalyst watcher")
 
 CTGOV = "https://clinicaltrials.gov/api/v2/studies"
 EDGAR_SUBMISSIONS = "https://data.sec.gov/submissions/CIK{cik}.json"
@@ -66,6 +69,31 @@ def log(msg):
 
 # --- plumbing ---------------------------------------------------------------
 
+def _decode_body(raw, content_encoding=""):
+    """Undo whatever Content-Encoding the server used.
+
+    urllib does NOT decompress for you once you send your own
+    Accept-Encoding header - and `fetch_filings` sends "gzip, deflate",
+    which SEC honours. Without this, every EDGAR call died on
+    "'utf-8' codec can't decode byte 0x8b in position 1" (0x1f 0x8b is the
+    gzip magic), the filing list came back empty, and the daily 8-K poll
+    reported "baseline recorded (0 filings) / 0 alerts sent" and exited 0 -
+    a broken watcher that looked exactly like a quiet news day. Found
+    2026-10-07; it had been failing on every run since the watcher was built.
+    Sniffs the magic bytes as well as trusting the header, because a server
+    that gzips without declaring it is the same bug again.
+    """
+    enc = (content_encoding or "").lower().strip()
+    if enc == "gzip" or raw[:2] == b"\x1f\x8b":
+        raw = gzip.decompress(raw)
+    elif enc == "deflate":
+        try:
+            raw = zlib.decompress(raw)
+        except zlib.error:
+            raw = zlib.decompress(raw, -zlib.MAX_WBITS)
+    return raw.decode()
+
+
 def get_json(url, headers=None, tries=3):
     """GET with retries. Returns None rather than raising: a dead API should
     make the run quiet, not crash it into a red X every five minutes."""
@@ -73,7 +101,9 @@ def get_json(url, headers=None, tries=3):
     for attempt in range(tries):
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
-                return json.loads(resp.read().decode())
+                return json.loads(
+                    _decode_body(resp.read(),
+                                 resp.headers.get("Content-Encoding")))
         except Exception as exc:
             if attempt == tries - 1:
                 log(f"  fetch failed: {url.split('?')[0]} — {exc}")

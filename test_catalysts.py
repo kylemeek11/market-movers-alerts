@@ -231,6 +231,51 @@ check("every mapped name has a CIK",
 check("every levered_to entry says why",
       all(l.get("why") for n in by_ticker.values() for l in n["levered_to"]))
 
+# --- Content-Encoding (regression, 2026-10-07) -----------------------------
+# fetch_filings sends "Accept-Encoding: gzip, deflate", SEC honours it, and
+# urllib does not decompress once you set that header yourself. get_json used
+# to hand the raw gzip to json.loads, so EVERY EDGAR call failed with
+# "'utf-8' codec can't decode byte 0x8b in position 1" while the run still
+# exited 0 and logged "baseline recorded (0 filings) / 0 alerts sent".
+import gzip as _gzip, zlib as _zlib
+
+payload = json.dumps({"name": "SURROZEN", "filings": {"recent": {
+    "form": ["8-K"], "filingDate": ["2026-10-07"], "items": ["8.01"],
+    "accessionNumber": ["0001-26-000001"], "primaryDocument": ["a.htm"]}}})
+
+check("plain body still decodes", cat._decode_body(payload.encode()) == payload)
+check("gzip body decodes",
+      cat._decode_body(_gzip.compress(payload.encode()), "gzip") == payload)
+check("gzip decodes even when the header does not say so",
+      cat._decode_body(_gzip.compress(payload.encode())) == payload)
+check("deflate body decodes",
+      cat._decode_body(_zlib.compress(payload.encode()), "deflate") == payload)
+_co = _zlib.compressobj(-1, _zlib.DEFLATED, -_zlib.MAX_WBITS)
+_raw_deflate = _co.compress(payload.encode()) + _co.flush()
+check("raw-deflate body decodes (no zlib wrapper)",
+      cat._decode_body(_raw_deflate, "deflate") == payload)
+
+# And end to end through fetch_filings, with a gzipped response like SEC's.
+class _Resp:
+    def __init__(self, body, enc):
+        self._b, self.headers = body, {"Content-Encoding": enc}
+    def read(self): return self._b
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+
+_real_urlopen = cat.urllib.request.urlopen
+cat.urllib.request.urlopen = lambda req, timeout=None: _Resp(
+    _gzip.compress(payload.encode()), "gzip")
+try:
+    got = cat.fetch_filings("0001824893")
+finally:
+    cat.urllib.request.urlopen = _real_urlopen
+check("fetch_filings reads a gzipped SEC response",
+      len(got) == 1 and got[0]["form"] == "8-K"
+      and got[0]["accession"] == "0001-26-000001", str(got))
+
+check("SEC_UA is never blank", bool(cat.SEC_UA.strip()), repr(cat.SEC_UA))
+
 print()
 print("FAILED: " + ", ".join(fails) if fails else "all passed")
 sys.exit(1 if fails else 0)
