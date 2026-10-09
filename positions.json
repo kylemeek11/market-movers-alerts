@@ -15,74 +15,6 @@
       "decimals": 8
     },
     {
-      "symbol": "SEI",
-      "product": "SEI-USD",
-      "qty": 30000,
-      "avg_cost": 0.077695,
-      "spread_pct": 1.03,
-      "current_stop": 0.06355,
-      "room_override_pct": 15,
-      "routing": "market_maker",
-      "decimals": 5
-    },
-    {
-      "symbol": "LINK",
-      "product": "LINK-USD",
-      "qty": 200,
-      "avg_cost": 15.18385,
-      "spread_pct": 0.97,
-      "current_stop": 12.8,
-      "room_override_pct": 15,
-      "routing": "exchange",
-      "sell_fee_pct": 0.25,
-      "decimals": 2
-    },
-    {
-      "symbol": "LDO",
-      "product": "LDO-USD",
-      "qty": 5000,
-      "avg_cost": 0.457458,
-      "spread_pct": 1.03,
-      "current_stop": 0.40267,
-      "room_override_pct": 15,
-      "routing": "market_maker",
-      "decimals": 5
-    },
-    {
-      "symbol": "XLM",
-      "product": "XLM-USD",
-      "qty": 10000,
-      "avg_cost": 0.228519,
-      "spread_pct": 0.98,
-      "current_stop": 0.194975,
-      "room_override_pct": 15,
-      "routing": "exchange",
-      "sell_fee_pct": 0.25,
-      "decimals": 6
-    },
-    {
-      "symbol": "SYRUP",
-      "product": "SYRUP-USD",
-      "qty": 10000,
-      "avg_cost": 0.232013,
-      "spread_pct": 1.02,
-      "current_stop": 0.2142,
-      "room_override_pct": 15,
-      "routing": "market_maker",
-      "decimals": 5
-    },
-    {
-      "symbol": "MEW",
-      "product": "MEW-USD",
-      "qty": 2000000,
-      "avg_cost": 0.00053916,
-      "spread_pct": 0.79,
-      "current_stop": 0.000451,
-      "room_override_pct": 15,
-      "routing": "market_maker",
-      "decimals": 6
-    },
-    {
       "symbol": "ALGO#2",
       "product": "ALGO-USD",
       "qty": 5000,
@@ -127,17 +59,6 @@
       "decimals": 5
     },
     {
-      "symbol": "JTO",
-      "product": "JTO-USD",
-      "qty": 2000,
-      "avg_cost": 0.58022,
-      "spread_pct": 1.03,
-      "current_stop": 0.48624,
-      "room_override_pct": 15,
-      "routing": "market_maker",
-      "decimals": 5
-    },
-    {
       "symbol": "LINK#2",
       "product": "LINK-USD",
       "qty": 75,
@@ -148,29 +69,6 @@
       "routing": "exchange",
       "sell_fee_pct": 0.25,
       "decimals": 2
-    },
-    {
-      "symbol": "MEGA#2",
-      "product": "MEGA-USD",
-      "qty": 20000,
-      "avg_cost": 0.05031,
-      "spread_pct": 1.11,
-      "current_stop": 0.04237,
-      "room_override_pct": 15,
-      "routing": "market_maker",
-      "decimals": 5
-    },
-    {
-      "symbol": "ADA",
-      "product": "ADA-USD",
-      "qty": 5000,
-      "avg_cost": 0.271802,
-      "spread_pct": 0.97,
-      "current_stop": 0.2297327,
-      "room_override_pct": 15,
-      "routing": "exchange",
-      "sell_fee_pct": 0.25,
-      "decimals": 7
     },
     {
       "symbol": "STRK",
