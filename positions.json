@@ -91,6 +91,17 @@
       "room_override_pct": 15,
       "routing": "market_maker",
       "decimals": 5
+    },
+    {
+      "symbol": "PYTH",
+      "product": "PYTH-USD",
+      "qty": 5500,
+      "avg_cost": 0.089941,
+      "spread_pct": 1.09,
+      "current_stop": 0.075617,
+      "room_override_pct": 15,
+      "routing": "market_maker",
+      "decimals": 6
     }
   ]
 }
