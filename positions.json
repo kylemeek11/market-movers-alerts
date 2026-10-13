@@ -190,6 +190,28 @@
       "room_override_pct": 15,
       "routing": "market_maker",
       "decimals": 5
+    },
+    {
+      "symbol": "BAT#3",
+      "product": "BAT-USD",
+      "qty": 10000,
+      "avg_cost": 0.16427992,
+      "spread_pct": 1.02,
+      "current_stop": 0.134483,
+      "room_override_pct": 15,
+      "routing": "market_maker",
+      "decimals": 6
+    },
+    {
+      "symbol": "BAT#4",
+      "product": "BAT-USD",
+      "qty": 50000,
+      "avg_cost": 0.18156453,
+      "spread_pct": 1.02,
+      "current_stop": 0.152756,
+      "room_override_pct": 15,
+      "routing": "market_maker",
+      "decimals": 6
     }
   ]
 }
