@@ -37,17 +37,6 @@
       "decimals": 4
     },
     {
-      "symbol": "RAY",
-      "product": "RAY-USD",
-      "qty": 1000,
-      "avg_cost": 2.09977,
-      "spread_pct": 0.99,
-      "current_stop": 2.05002,
-      "room_override_pct": 15,
-      "routing": "market_maker",
-      "decimals": 5
-    },
-    {
       "symbol": "LINK#2",
       "product": "LINK-USD",
       "qty": 75,
@@ -113,6 +102,94 @@
       "room_override_pct": 15,
       "routing": "market_maker",
       "decimals": 4
+    },
+    {
+      "symbol": "LINK#3",
+      "product": "LINK-USD",
+      "qty": 25,
+      "avg_cost": 12.800812,
+      "spread_pct": 0.96,
+      "current_stop": 10.78,
+      "room_override_pct": 15,
+      "routing": "market_maker",
+      "decimals": 2
+    },
+    {
+      "symbol": "BAT#2",
+      "product": "BAT-USD",
+      "qty": 10000,
+      "avg_cost": 0.159846,
+      "spread_pct": 1.02,
+      "current_stop": 0.134483,
+      "room_override_pct": 15,
+      "routing": "market_maker",
+      "decimals": 6
+    },
+    {
+      "symbol": "RENDER#2",
+      "product": "RENDER-USD",
+      "qty": 250,
+      "avg_cost": 2.1214325,
+      "spread_pct": 1.03,
+      "current_stop": 1.78,
+      "room_override_pct": 15,
+      "routing": "market_maker",
+      "decimals": 4
+    },
+    {
+      "symbol": "UNI",
+      "product": "UNI-USD",
+      "qty": 150,
+      "avg_cost": 7.1354,
+      "spread_pct": 0.96,
+      "current_stop": 5.995,
+      "room_override_pct": 15,
+      "routing": "market_maker",
+      "decimals": 3
+    },
+    {
+      "symbol": "AERO#2",
+      "product": "AERO-USD",
+      "qty": 500,
+      "avg_cost": 0.8856397,
+      "spread_pct": 1.06,
+      "current_stop": 0.74481,
+      "room_override_pct": 15,
+      "routing": "market_maker",
+      "decimals": 5
+    },
+    {
+      "symbol": "XCN#2",
+      "product": "XCN-USD",
+      "qty": 125000,
+      "avg_cost": 0.0042552891,
+      "spread_pct": 1.14,
+      "current_stop": 0.0035758,
+      "room_override_pct": 15,
+      "routing": "market_maker",
+      "decimals": 7
+    },
+    {
+      "symbol": "PYTH#2",
+      "product": "PYTH-USD",
+      "qty": 4500,
+      "avg_cost": 0.08363177,
+      "spread_pct": 1.09,
+      "current_stop": 0.070312,
+      "room_override_pct": 15,
+      "routing": "market_maker",
+      "decimals": 6
+    },
+    {
+      "symbol": "SNX#2",
+      "product": "SNX-USD",
+      "qty": 3000,
+      "avg_cost": 0.24668123,
+      "spread_pct": 1.18,
+      "current_stop": 0.2072,
+      "room_override_pct": 15,
+      "routing": "market_maker",
+      "decimals": 5
     }
   ]
 }
