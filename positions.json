@@ -17,10 +17,10 @@
     {
       "symbol": "BAT",
       "product": "BAT-USD",
-      "qty": 30000,
-      "avg_cost": 0.105177,
+      "qty": 50000,
+      "avg_cost": 0.1279314,
       "spread_pct": 1.02,
-      "current_stop": 0.129052,
+      "current_stop": 0.150321,
       "room_override_pct": 15,
       "routing": "market_maker",
       "decimals": 6
@@ -115,17 +115,6 @@
       "decimals": 2
     },
     {
-      "symbol": "BAT#2",
-      "product": "BAT-USD",
-      "qty": 10000,
-      "avg_cost": 0.159846,
-      "spread_pct": 1.02,
-      "current_stop": 0.134483,
-      "room_override_pct": 15,
-      "routing": "market_maker",
-      "decimals": 6
-    },
-    {
       "symbol": "RENDER#2",
       "product": "RENDER-USD",
       "qty": 250,
@@ -190,17 +179,6 @@
       "room_override_pct": 15,
       "routing": "market_maker",
       "decimals": 5
-    },
-    {
-      "symbol": "BAT#3",
-      "product": "BAT-USD",
-      "qty": 10000,
-      "avg_cost": 0.16427992,
-      "spread_pct": 1.02,
-      "current_stop": 0.134483,
-      "room_override_pct": 15,
-      "routing": "market_maker",
-      "decimals": 6
     },
     {
       "symbol": "BAT#4",
