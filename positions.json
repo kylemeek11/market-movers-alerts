@@ -190,6 +190,28 @@
       "room_override_pct": 15,
       "routing": "market_maker",
       "decimals": 6
+    },
+    {
+      "symbol": "PYTH#3",
+      "product": "PYTH-USD",
+      "qty": 20000,
+      "avg_cost": 0.088033436,
+      "spread_pct": 1.09,
+      "current_stop": 0.074013,
+      "room_override_pct": 15,
+      "routing": "market_maker",
+      "decimals": 6
+    },
+    {
+      "symbol": "SYRUP",
+      "product": "SYRUP-USD",
+      "qty": 2000,
+      "avg_cost": 0.263755,
+      "spread_pct": 1.02,
+      "current_stop": 0.2219,
+      "room_override_pct": 15,
+      "routing": "market_maker",
+      "decimals": 5
     }
   ]
 }
