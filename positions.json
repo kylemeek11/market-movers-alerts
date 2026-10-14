@@ -20,7 +20,7 @@
       "qty": 50000,
       "avg_cost": 0.1279314,
       "spread_pct": 1.02,
-      "current_stop": 0.150321,
+      "current_stop": 0.154956,
       "room_override_pct": 15,
       "routing": "market_maker",
       "decimals": 6
@@ -267,6 +267,72 @@
       "room_override_pct": 15,
       "routing": "market_maker",
       "decimals": 5
+    },
+    {
+      "symbol": "BAT#6",
+      "product": "BAT-USD",
+      "qty": 25000,
+      "avg_cost": 0.20452281,
+      "spread_pct": 1.02,
+      "current_stop": 0.172071,
+      "room_override_pct": 15,
+      "routing": "market_maker",
+      "decimals": 6
+    },
+    {
+      "symbol": "PYTH#4",
+      "product": "PYTH-USD",
+      "qty": 10000,
+      "avg_cost": 0.0838452,
+      "spread_pct": 1.09,
+      "current_stop": 0.070492,
+      "room_override_pct": 15,
+      "routing": "market_maker",
+      "decimals": 6
+    },
+    {
+      "symbol": "UNI#2",
+      "product": "UNI-USD",
+      "qty": 350,
+      "avg_cost": 7.56615879,
+      "spread_pct": 0.96,
+      "current_stop": 6.369,
+      "room_override_pct": 15,
+      "routing": "market_maker",
+      "decimals": 3
+    },
+    {
+      "symbol": "SYRUP#3",
+      "product": "SYRUP-USD",
+      "qty": 5000,
+      "avg_cost": 0.23468765,
+      "spread_pct": 1.02,
+      "current_stop": 0.19745,
+      "room_override_pct": 15,
+      "routing": "market_maker",
+      "decimals": 5
+    },
+    {
+      "symbol": "PYTH#5",
+      "product": "PYTH-USD",
+      "qty": 10000,
+      "avg_cost": 0.082852379,
+      "spread_pct": 1.09,
+      "current_stop": 0.069657,
+      "room_override_pct": 15,
+      "routing": "market_maker",
+      "decimals": 6
+    },
+    {
+      "symbol": "BAT#7",
+      "product": "BAT-USD",
+      "qty": 50000,
+      "avg_cost": 0.19645176,
+      "spread_pct": 1.02,
+      "current_stop": 0.165281,
+      "room_override_pct": 15,
+      "routing": "market_maker",
+      "decimals": 6
     }
   ]
 }
