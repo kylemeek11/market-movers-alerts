@@ -26,17 +26,6 @@
       "decimals": 6
     },
     {
-      "symbol": "ZRO",
-      "product": "ZRO-USD",
-      "qty": 1000,
-      "avg_cost": 1.96543,
-      "spread_pct": 1.05,
-      "current_stop": 1.9018,
-      "room_override_pct": 15,
-      "routing": "market_maker",
-      "decimals": 4
-    },
-    {
       "symbol": "LINK#2",
       "product": "LINK-USD",
       "qty": 75,
@@ -203,17 +192,6 @@
       "decimals": 6
     },
     {
-      "symbol": "SYRUP",
-      "product": "SYRUP-USD",
-      "qty": 2000,
-      "avg_cost": 0.263755,
-      "spread_pct": 1.02,
-      "current_stop": 0.2219,
-      "room_override_pct": 15,
-      "routing": "market_maker",
-      "decimals": 5
-    },
-    {
       "symbol": "XCN#3",
       "product": "XCN-USD",
       "qty": 125000,
@@ -269,17 +247,6 @@
       "decimals": 5
     },
     {
-      "symbol": "BAT#6",
-      "product": "BAT-USD",
-      "qty": 25000,
-      "avg_cost": 0.20452281,
-      "spread_pct": 1.02,
-      "current_stop": 0.172071,
-      "room_override_pct": 15,
-      "routing": "market_maker",
-      "decimals": 6
-    },
-    {
       "symbol": "PYTH#4",
       "product": "PYTH-USD",
       "qty": 10000,
@@ -333,6 +300,39 @@
       "room_override_pct": 15,
       "routing": "market_maker",
       "decimals": 6
+    },
+    {
+      "symbol": "RENDER#3",
+      "product": "RENDER-USD",
+      "qty": 500,
+      "avg_cost": 2.064118925,
+      "spread_pct": 1.03,
+      "current_stop": 1.73,
+      "room_override_pct": 15,
+      "routing": "market_maker",
+      "decimals": 4
+    },
+    {
+      "symbol": "SNX#3",
+      "product": "SNX-USD",
+      "qty": 5000,
+      "avg_cost": 0.24363198,
+      "spread_pct": 1.18,
+      "current_stop": 0.20464,
+      "room_override_pct": 15,
+      "routing": "market_maker",
+      "decimals": 5
+    },
+    {
+      "symbol": "LINK#4",
+      "product": "LINK-USD",
+      "qty": 200,
+      "avg_cost": 13.0877363682,
+      "spread_pct": 0.96,
+      "current_stop": 11.02,
+      "room_override_pct": 15,
+      "routing": "market_maker",
+      "decimals": 2
     }
   ]
 }
