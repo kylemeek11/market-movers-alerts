@@ -191,17 +191,6 @@
       "decimals": 7
     },
     {
-      "symbol": "BAT#5",
-      "product": "BAT-USD",
-      "qty": 25000,
-      "avg_cost": 0.20119724,
-      "spread_pct": 1.02,
-      "current_stop": 0.169273,
-      "room_override_pct": 15,
-      "routing": "market_maker",
-      "decimals": 6
-    },
-    {
       "symbol": "XCN#4",
       "product": "XCN-USD",
       "qty": 500000,
