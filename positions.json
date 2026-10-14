@@ -3,18 +3,6 @@
   "_updated": "2026-10-14",
   "positions": [
     {
-      "symbol": "SHIB",
-      "product": "SHIB-USD",
-      "qty": 300000000,
-      "avg_cost": 6.8029e-06,
-      "spread_pct": 0.93,
-      "current_stop": 4.96e-06,
-      "room_override_pct": 15,
-      "routing": "exchange",
-      "sell_fee_pct": 0.25,
-      "decimals": 8
-    },
-    {
       "symbol": "BAT",
       "product": "BAT-USD",
       "qty": 50000,
