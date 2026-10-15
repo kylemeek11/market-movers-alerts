@@ -48,17 +48,6 @@
       "decimals": 5
     },
     {
-      "symbol": "SNX",
-      "product": "SNX-USD",
-      "qty": 2000,
-      "avg_cost": 0.25569,
-      "spread_pct": 1.18,
-      "current_stop": 0.21477,
-      "room_override_pct": 15,
-      "routing": "market_maker",
-      "decimals": 5
-    },
-    {
       "symbol": "PYTH",
       "product": "PYTH-USD",
       "qty": 5500,
@@ -213,17 +202,6 @@
       "decimals": 5
     },
     {
-      "symbol": "SYRUP#2",
-      "product": "SYRUP-USD",
-      "qty": 3000,
-      "avg_cost": 0.23450527,
-      "spread_pct": 1.02,
-      "current_stop": 0.1973,
-      "room_override_pct": 15,
-      "routing": "market_maker",
-      "decimals": 5
-    },
-    {
       "symbol": "PYTH#4",
       "product": "PYTH-USD",
       "qty": 10000,
@@ -246,34 +224,12 @@
       "decimals": 3
     },
     {
-      "symbol": "SYRUP#3",
-      "product": "SYRUP-USD",
-      "qty": 5000,
-      "avg_cost": 0.23468765,
-      "spread_pct": 1.02,
-      "current_stop": 0.19745,
-      "room_override_pct": 15,
-      "routing": "market_maker",
-      "decimals": 5
-    },
-    {
       "symbol": "PYTH#5",
       "product": "PYTH-USD",
       "qty": 10000,
       "avg_cost": 0.082852379,
       "spread_pct": 1.09,
       "current_stop": 0.069657,
-      "room_override_pct": 15,
-      "routing": "market_maker",
-      "decimals": 6
-    },
-    {
-      "symbol": "BAT#7",
-      "product": "BAT-USD",
-      "qty": 50000,
-      "avg_cost": 0.19645176,
-      "spread_pct": 1.02,
-      "current_stop": 0.165281,
       "room_override_pct": 15,
       "routing": "market_maker",
       "decimals": 6
@@ -310,6 +266,28 @@
       "room_override_pct": 15,
       "routing": "market_maker",
       "decimals": 2
+    },
+    {
+      "symbol": "PYTH#6",
+      "product": "PYTH-USD",
+      "qty": 5000,
+      "avg_cost": 0.088523646,
+      "spread_pct": 1.09,
+      "current_stop": 0.074425,
+      "room_override_pct": 15,
+      "routing": "market_maker",
+      "decimals": 6
+    },
+    {
+      "symbol": "PYTH#7",
+      "product": "PYTH-USD",
+      "qty": 5000,
+      "avg_cost": 0.08644379,
+      "spread_pct": 1.09,
+      "current_stop": 0.072676,
+      "room_override_pct": 15,
+      "routing": "market_maker",
+      "decimals": 6
     }
   ]
 }
