@@ -271,6 +271,12 @@ dc._get_json = no_network
 SENT = []
 ab.push = lambda title, message, **kw: SENT.append((title, message, kw))
 ab.robinhood_tradable = lambda row, cache: True
+# These checks are about the alert format, so the buy gate is held open:
+# an empty book and an all-day window. The real window is checked at the end.
+OPEN_BOOK = {"positions": [], "_lot_size_usd": 500, "_buys_allowed": True}
+ab.load_book = lambda: OPEN_BOOK
+REAL_WINDOW = (ab.BUY_START_HOUR, ab.BUY_END_HOUR)
+ab.BUY_START_HOUR, ab.BUY_END_HOUR = 0, 24
 
 ONE_AM = datetime(2026, 10, 6, 6, 0, tzinfo=timezone.utc).timestamp()   # 1am CDT
 hype = {"kind": "crypto", "symbol": "HYPE", "name": "Hyperliquid", "price": 95.0, "pct": 5.6,
@@ -378,6 +384,25 @@ ab.dc = saved
 # A stock row never gets crypto context.
 check("stocks get no context lines",
       ab.context_lines({"daily": {}}, {"kind": "stock", "symbol": "ABC", "price": 5.0}, 85500.0, NOW) == [])
+
+# The real 7 AM - 7 PM window (2026-10-16): NOW is 9 PM CDT, ONE_AM is 1 AM.
+ab.BUY_START_HOUR, ab.BUY_END_HOUR = REAL_WINDOW
+state = {"alerts_today": {}, "streak": {}, "night_pass": {},
+         "daily": {"HYPE": dc.summarize(candles(flat_history(90.0), today_close=95.0), NOW),
+                   "BTC": dc.summarize(candles(flat_history(85000.0), today_close=85500.0), NOW),
+                   "_bitstamp": {"d": dc.utc_day(NOW), "pairs": {"BTC": "btcusd"}}}}
+SENT.clear()
+state["base_seen"] = {"HYPE": NOW - 15 * 60}
+ab.run_breakouts([hype], {}, NOW, False, state, {}, 85500.0)
+check("9 PM breakout: starred but quiet, outside the buy window",
+      SENT and SENT[0][0].startswith("* HYPE base breakout") and SENT[0][2].get("quiet") is True
+      and "outside 7 AM-7 PM" in SENT[0][0], SENT[:1])
+check("...and kept for the 7 AM digest",
+      [s["symbol"] for s in state.get("night_stars", [])] == ["HYPE"], state.get("night_stars"))
+SENT.clear()
+ab.send_rate([("rate:crypto:HYPE", hype, 3.4, 60, 6.0)], {}, ONE_AM, True, state=state)
+check("1 AM TOP SETUP: quiet feed, not max",
+      SENT and SENT[0][2].get("quiet") is True and SENT[0][2].get("priority") == "low", SENT[:1])
 
 print()
 if FAILURES:
