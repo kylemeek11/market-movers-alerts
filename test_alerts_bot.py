@@ -835,18 +835,56 @@ unlocked = dict(OPEN_BOOK, positions=[lot("PYTH", 5500, 0.0899, 0.0756), lot("PY
 check("held and not locked: no add",
       ab.buy_gate("PYTH", NOON_CT, unlocked) == (False, "held, first lot not locked: no add"))
 locked = dict(OPEN_BOOK, positions=[lot("BAT", 50000, 0.1279, 0.2027), lot("BAT#4", 50000, 0.1816, 0.2027)])
-check("held and locked: an add at half size",
-      ab.buy_gate("BAT", NOON_CT, locked) == (True, "add: half lot $250"), ab.buy_gate("BAT", NOON_CT, locked))
+check("held and locked: still not an alert buy - adds come only from a calm stop check",
+      ab.buy_gate("BAT", NOON_CT, locked) == (False, "held: adds only at a calm stop check"),
+      ab.buy_gate("BAT", NOON_CT, locked))
 today = dict(OPEN_BOOK, positions=[lot("BAT", 50000, 0.1279, 0.2027, bought="2026-10-16")])
 check("bought today: not a second lot", ab.buy_gate("BAT", NOON_CT, today) == (False, "already bought today"))
 real_book = ab.load_book
 ab.load_book = lambda: None
 check("unreadable book: no buys", ab.buy_gate("PYTH", NOON_CT) == (False, "positions file unreadable"))
 ab.load_book = real_book
+check("buy_decision gives the size too, halved for a yellow flag",
+      ab.buy_decision("PYTH", NOON_CT, OPEN_BOOK) == (True, "$500 lot", 500.0)
+      and ab.buy_decision("PYTH", NOON_CT, OPEN_BOOK, half="high-vol coin")
+      == (True, "$250 lot (half size: high-vol coin)", 250.0),
+      ab.buy_decision("PYTH", NOON_CT, OPEN_BOOK, half="high-vol coin"))
+nine = dict(OPEN_BOOK, positions=[lot(f"C{i}", 1, 10.0, 8.0) for i in range(9)])
+check("a star earlier in the same run counts as a lot",
+      ab.buy_gate("PYTH", NOON_CT, nine, pending=[{"symbol": "GRT", "usd": 500.0}])
+      == (False, "9 lots open + 1 starred this run, max 10")
+      and ab.buy_gate("PYTH", NOON_CT, nine) == (True, "$500 lot"),
+      ab.buy_gate("PYTH", NOON_CT, nine, pending=[{"symbol": "GRT", "usd": 500.0}]))
+near_cap = dict(OPEN_BOOK, positions=[lot("BAT", 100000, 0.392, 0.3)])          # $39,200
+check("...and against the $40K cost cap",
+      ab.buy_gate("PYTH", NOON_CT, near_cap) == (True, "$500 lot")
+      and ab.buy_gate("PYTH", NOON_CT, near_cap, pending=[{"symbol": "GRT", "usd": 500.0}])
+      == (False, "crypto cost $39,700 is at the $40,000 cap"))
+check("...and the same coin cannot be starred twice in a run",
+      ab.buy_gate("GRT", NOON_CT, OPEN_BOOK, pending=[{"symbol": "GRT", "usd": 500.0}])
+      == (False, "already starred this run"))
+check("first_red cuts a red line to its headline",
+      ab.first_red(["1st alert today", "caution: already up 27% on the week - alerts like this "
+                    "averaged a loss"]) == "caution: already up 27% on the week"
+      and ab.first_red(["small coin ($35M cap): runs more often"]) is None)
+check("the no-catch-up line is on the red list too",
+      ab.first_red(["no catch-up trade: BTC +6% over 3 days and this coin +0.3% - laggards "
+                    "averaged -2.1%"]) == "no catch-up trade: BTC +6% over 3 days and this coin +0.3%")
+check("the high-vol line halves the lot",
+      ab.half_reason(["high-vol coin (6.4%/day): runs more often - half size"]) == "high-vol coin"
+      and ab.half_reason(["small coin ($35M cap)"]) is None)
 
 sent = []
+ALL_PUSHES = []          # every push in this section, for the gold-star invariant at the end
+
+
+def capture(title, message, **k):
+    sent.append((title, message, k))
+    ALL_PUSHES.append((title, message, k))
+
+
 real_push, real_book = ab.push, ab.load_book
-ab.push = lambda title, message, **k: sent.append((title, message, k))
+ab.push = capture
 try:
     # The buy gate and the 7 AM digest are shared with BASE BREAKOUT. They are
     # exercised here through the rate path with the old TOP SETUP routing
@@ -859,55 +897,168 @@ try:
     ab.send_rate([("rate:crypto:PYTH", pyth, 3.9, 71.0, 6.2)], {}, NOON_CT, False,
                  state={"alerts_today": {}, "streak": {}})
     title, body, kw = sent[-1]
-    check("a star on a held, unlocked coin goes quiet, reason in the title",
-          kw.get("quiet") is True and kw.get("priority") == "low" and title.startswith("* PYTH")
-          and title.endswith("[held, first lot not locked: no add]"), (title, kw))
+    check("a buy signal on a held, unlocked coin: no star, quiet, the reason in the title",
+          kw.get("quiet") is True and kw.get("priority") == "low" and kw.get("tags") == "no_entry_sign"
+          and title.startswith("PYTH - not a buy - ")
+          and title.endswith("(held, first lot not locked: no add)")
+          and body.startswith("NOT A BUY: held, first lot not locked"), (title, body, kw))
     ab.load_book = lambda: full
     sent.clear()
     ab.send_rate([("rate:crypto:GRT", dict(grt), 3.9, 71.0, 6.2)], {}, NOON_CT, False,
                  state={"alerts_today": {}, "streak": {}})
     title, body, kw = sent[-1]
-    check("ten lots open: the star goes quiet with the reason",
-          kw.get("quiet") is True and title.endswith("[10 lots open, max 10]"), (title, kw))
+    check("ten lots open: no star, quiet, with the reason",
+          kw.get("quiet") is True and kw.get("tags") == "no_entry_sign"
+          and title.endswith("(10 lots open, max 10)"), (title, kw))
     ab.load_book = lambda: OPEN_BOOK
     sent.clear()
     hot = dict(grt, week_pct=25.0)
     ab.send_rate([("rate:crypto:GRT", hot, 3.9, 71.0, 6.2)], {}, NOON_CT, False,
                  state={"alerts_today": {}, "streak": {}})
     title, body, kw = sent[-1]
-    check("a TOP SETUP with a caution line loses its star (the old gap)",
-          not title.startswith("*") and kw.get("quiet") is True and "TOP SETUP" in body, (title, kw))
+    check("a TOP SETUP with a caution line gets no star (the old gap)",
+          kw.get("tags") == "no_entry_sign" and kw.get("quiet") is True and "TOP SETUP" in body
+          and title.endswith("(caution: already up 25% on the week)"), (title, kw))
     sent.clear()
     st = {"alerts_today": {}, "streak": {}}
     ab.send_rate([("rate:crypto:GRT", dict(grt), 3.9, 71.0, 6.2)], {}, NINE_PM, False, state=st)
     title, body, kw = sent[-1]
-    check("a star at 9 PM goes quiet and is kept for the morning",
-          kw.get("quiet") is True and [s["symbol"] for s in st.get("night_stars", [])] == ["GRT"],
-          (title, st.get("night_stars")))
+    check("a buy signal at 9 PM: the hourglass, quiet, kept for the morning",
+          kw.get("quiet") is True and kw.get("tags") == "hourglass_flowing_sand"
+          and title.startswith("GRT - not a buy yet - ")
+          and [s["symbol"] for s in st.get("night_stars", [])] == ["GRT"]
+          and st["night_stars"][0].get("kind") == "top", (title, st.get("night_stars")))
     sent.clear()
     ab.send_night_digest(st, [dict(grt, price=0.0310)], SEVEN_AM)
     title, body, kw = sent[-1] if sent else ("", "", {})
-    check("7 AM: one digest, loud because a buy is allowed",
-          len(sent) == 1 and title == "Overnight stars: GRT" and not kw.get("quiet")
-          and "$500 lot" in body and "+5.1%" in body, (title, body, kw))
+    check("7 AM: a TOP SETUP kept overnight is no base breakout now: no star, quiet",
+          len(sent) == 1 and kw.get("quiet") is True and kw.get("tags") == "no_entry_sign"
+          and title == "Overnight setups, not a buy now: GRT" and "not a base breakout now" in body
+          and "+5.1%" in body, (title, body, kw))
     check("...and the list is cleared", st["night_stars"] == [])
     sent.clear()
     ab.send_night_digest(st, [], SEVEN_AM + 300)
-    check("no stars, no digest", sent == [])
-    ab.load_book = lambda: full
-    st = {"night_stars": [{"symbol": "GRT", "title": "* GRT", "price": 0.0295, "ts": NINE_PM}]}
+    check("no signals, no digest", sent == [])
+    st = {"night_stars": [{"symbol": "GRT", "what": "base breakout", "price": 0.0295,
+                           "ts": NINE_PM - 20 * 3600}]}
     ab.send_night_digest(st, [], SEVEN_AM)
-    check("7 AM with the book full: the digest goes quiet",
-          sent and sent[-1][2].get("quiet") is True and "10 lots open" in sent[-1][1], sent[-1:])
-    sent.clear()
-    st = {"night_stars": [{"symbol": "GRT", "title": "* GRT", "price": 0.0295, "ts": NINE_PM - 20 * 3600}]}
-    ab.send_night_digest(st, [], SEVEN_AM)
-    check("a star older than 14 hours is dropped, not sent", sent == [] and st["night_stars"] == [])
+    check("a signal older than 14 hours is dropped, not sent", sent == [] and st["night_stars"] == [])
     sent.clear()
     ab.send_alerts([(15.0, "crypto:GRT", dict(grt, pct=16.0, dollars=5e7))], {}, ab.CRYPTO_HIGH_PRIORITY_LEVEL,
                    False, state=None, now_ts=NOON_CT)
     check("a threshold crossing is a mover: quiet feed",
           sent and sent[-1][2].get("quiet") is True and sent[-1][2].get("priority") == "low", sent[-1:])
+
+    # The gold star end to end (2026-10-16). SEVEN_AM above is a Saturday, when
+    # no base breakout is green, so these run Monday night to Tuesday morning.
+    MON_9PM = datetime(2026, 10, 20, 2, 0, tzinfo=timezone.utc).timestamp()     # 9 PM CDT Mon
+    TUE_7AM = datetime(2026, 10, 20, 12, 5, tzinfo=timezone.utc).timestamp()    # 7:05 AM CDT Tue
+    TUE_NOON = datetime(2026, 10, 20, 17, 0, tzinfo=timezone.utc).timestamp()
+    uday = ab.dc.utc_day(TUE_7AM)
+    entry = {"d": uday, "prev_close": 0.0280, "base14": 9.0, "avg50": 0.0270,
+             "high30": 0.0300, "close3": 0.0279, "vol30": 3.0, "days": [0.5, -0.4, 0.3]}
+    base_ctx = ab.dc.coin_context(entry, 0.0295, uday)                          # +5.4% today
+
+    def gstate(**extra):
+        # The cached Bitstamp list keeps the depth line off the network.
+        return dict({"alerts_today": {}, "streak": {},
+                     "daily": {"GRT": dict(entry),
+                               "_bitstamp": {"d": uday, "pairs": {"BTC": "btcusd"}}}}, **extra)
+
+    ab.load_book = lambda: OPEN_BOOK
+    sent.clear()
+    st = gstate()
+    ab.send_breakouts([("base:crypto:GRT", dict(grt), base_ctx)], {}, TUE_NOON, False, state=st)
+    title, body, kw = sent[-1]
+    check("noon BASE BREAKOUT, room in the book: the gold star, loud, BUY in the title",
+          kw.get("tags") == "star" and kw.get("quiet") is False and kw.get("priority") == "high"
+          and title == "GRT - BUY $500 lot - base breakout +5.4% today"
+          and body.startswith("BUY NOW: $500 lot, then the 15% stop"), (title, body, kw))
+    check("...and it counts against the book for the rest of the run",
+          st.get("run_stars") == [{"symbol": "GRT", "usd": 500.0}], st.get("run_stars"))
+    ab.load_book = lambda: dict(OPEN_BOOK, positions=[lot("GRT", 17000, 0.0250, 0.0262)])
+    sent.clear()
+    ab.send_breakouts([("base:crypto:GRT", dict(grt), base_ctx)], {}, TUE_NOON, False, state=gstate())
+    title, body, kw = sent[-1]
+    check("held and locked: no star, adds come only from a calm stop check",
+          kw.get("tags") == "no_entry_sign" and kw.get("quiet") is True
+          and title == "GRT - not a buy - base breakout +5.4% today (held: adds only at a calm stop check)",
+          (title, kw))
+    ab.load_book = lambda: OPEN_BOOK
+    sent.clear()
+    st = gstate()
+    st["daily"]["GRT"]["vol30"] = 6.4
+    ab.send_breakouts([("base:crypto:GRT", dict(grt), base_ctx)], {}, TUE_NOON, False, state=st)
+    title, body, kw = sent[-1]
+    check("a high-vol coin: the gold star for half a lot",
+          kw.get("tags") == "star"
+          and title == "GRT - BUY $250 lot (half size: high-vol coin) - base breakout +5.4% today"
+          and st.get("run_stars") == [{"symbol": "GRT", "usd": 250.0}], (title, st.get("run_stars")))
+    ab.load_book = lambda: OPEN_BOOK
+    sent.clear()
+    st = gstate()
+    ab.send_breakouts([("base:crypto:GRT", dict(grt), base_ctx)], {}, MON_9PM, False, state=st)
+    title, body, kw = sent[-1]
+    check("9 PM BASE BREAKOUT: the hourglass, quiet, kept for 7 AM",
+          kw.get("tags") == "hourglass_flowing_sand" and kw.get("quiet") is True
+          and title == "GRT - not a buy yet - base breakout +5.4% today (7 AM re-check)"
+          and body.startswith("NOT A BUY YET")
+          and [s.get("kind") for s in st.get("night_stars", [])] == ["base"],
+          (title, kw, st.get("night_stars")))
+    sent.clear()
+    ab.send_night_digest(st, [dict(grt, price=0.0300)], TUE_7AM)
+    title, body, kw = sent[-1] if sent else ("", "", {})
+    check("7 AM, still a base breakout and room in the book: its own gold star, loud",
+          len(sent) == 1 and kw.get("tags") == "star" and kw.get("quiet") is False
+          and kw.get("priority") == "high" and kw.get("click") == "https://robinhood.com/crypto/GRT"
+          and title == "GRT - BUY $500 lot - overnight breakout, still a buy"
+          and body.startswith("BUY NOW: $500 lot") and "+1.7%" in body, (title, body, kw))
+    check("...the list is cleared and the star counts for the run",
+          st["night_stars"] == [] and st.get("run_stars") == [{"symbol": "GRT", "usd": 500.0}],
+          (st["night_stars"], st.get("run_stars")))
+    night = [{"symbol": "GRT", "what": "base breakout +5.4% today", "kind": "base",
+              "price": 0.0295, "ts": MON_9PM}]
+    sent.clear()
+    ab.send_night_digest(gstate(night_stars=list(night)), [dict(grt, price=0.0287)], TUE_7AM)
+    title, body, kw = sent[-1] if sent else ("", "", {})
+    check("7 AM, faded under +5% on the day: no star, quiet, the reason listed",
+          len(sent) == 1 and kw.get("quiet") is True and kw.get("tags") == "no_entry_sign"
+          and "BUY" not in title and "not a base breakout now (no +5% day)" in body, (title, body, kw))
+    sent.clear()
+    st = gstate(night_stars=list(night))
+    st["daily"]["BTC"] = {"d": uday, "prev_close": 90000.0, "base14": 5.0, "avg50": 88000.0,
+                          "high30": 92000.0, "close3": 89000.0, "vol30": 2.0,
+                          "days": [0.4, -0.2, 0.1]}
+    ab.send_night_digest(st, [dict(grt, price=0.0300)], TUE_7AM, btc_price=85500.0)
+    title, body, kw = sent[-1] if sent else ("", "", {})
+    check("7 AM, still a breakout but BTC -5% on the day: a red line, no star",
+          len(sent) == 1 and kw.get("tags") == "no_entry_sign"
+          and "RED: BTC -5.0% in 24h" in body, (title, body))
+    ab.load_book = lambda: full
+    sent.clear()
+    ab.send_night_digest(gstate(night_stars=list(night)), [dict(grt, price=0.0300)], TUE_7AM)
+    check("7 AM with the book full: no star, quiet, the reason listed",
+          sent and sent[-1][2].get("quiet") is True and sent[-1][2].get("tags") == "no_entry_sign"
+          and "10 lots open, max 10" in sent[-1][1], sent[-1:])
+    ab.load_book = lambda: nine
+    sent.clear()
+    st = gstate(night_stars=list(night) + [dict(night[0], symbol="ZRX")])
+    st["daily"]["ZRX"] = dict(entry)
+    ab.send_night_digest(st, [dict(grt, price=0.0300),
+                              dict(grt, symbol="ZRX", name="0x", price=0.0300)], TUE_7AM)
+    stars = [s for s in sent if s[2].get("tags") == "star"]
+    check("two still green, room for one lot: one gold star, the other listed with the reason",
+          len(stars) == 1 and stars[0][0].startswith("GRT - BUY")
+          and any("ZRX" in s[0] and "9 lots open + 1 starred this run, max 10" in s[1]
+                  for s in sent if s[2].get("quiet")), sent)
+    ab.load_book = lambda: OPEN_BOOK
+    st = gstate(night_stars=list(night))
+    ab.push = lambda title, message, **k: False
+    ab.send_night_digest(st, [dict(grt, price=0.0300)], TUE_7AM)
+    ab.push = capture
+    check("a gold star that fails to send is kept for the next run and not counted",
+          [s["symbol"] for s in st["night_stars"]] == ["GRT"] and not st.get("run_stars"), st)
+    sent.clear()
     # The default since 2026-10-16: a TOP SETUP is an alert only.
     ab.TOP_SETUP_IS_BUY = False
     ab.load_book = lambda: OPEN_BOOK
@@ -923,6 +1074,11 @@ try:
     ab.send_rate([("rate:crypto:GRT", dict(grt), 3.9, 71.0, 6.2)], {}, NINE_PM, False, state=st)
     check("default: a 9 PM TOP SETUP is not kept for the 7 AM digest",
           sent and not st.get("night_stars"), st.get("night_stars"))
+    stars = [p for p in ALL_PUSHES if p[2].get("tags") == "star"]
+    check("the gold star is only ever on a loud BUY, and every BUY has it",
+          stars and all(" - BUY " in p[0] and p[2].get("quiet") is False for p in stars)
+          and all(" - BUY " not in p[0] for p in ALL_PUSHES if p[2].get("tags") != "star"),
+          [(p[0], p[2].get("tags"), p[2].get("quiet")) for p in ALL_PUSHES])
 finally:
     ab.push, ab.load_book = real_push, real_book
     ab.TOP_SETUP_IS_BUY = False
