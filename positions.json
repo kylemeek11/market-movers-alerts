@@ -92,12 +92,12 @@
       "qty": 500,
       "avg_cost": 0.8856397,
       "spread_pct": 1.06,
-      "current_stop": 0.74481,
+      "current_stop": 0.75773,
       "room_override_pct": 15,
       "routing": "market_maker",
       "decimals": 5,
       "bought": "2026-10-12",
-      "stop_placed": "2026-10-12"
+      "stop_placed": "2026-10-16"
     },
     {
       "symbol": "XCN#2",
@@ -300,12 +300,12 @@
       "qty": 25,
       "avg_cost": 12.6192,
       "spread_pct": 0.96,
-      "current_stop": null,
+      "current_stop": 10.45,
       "room_override_pct": 15,
       "routing": "market_maker",
       "decimals": 2,
       "bought": "2026-10-16",
-      "stop_placed": null
+      "stop_placed": "2026-10-16"
     },
     {
       "symbol": "RENDER#4",
@@ -313,12 +313,12 @@
       "qty": 250,
       "avg_cost": 1.96196,
       "spread_pct": 1.03,
-      "current_stop": null,
+      "current_stop": 1.61,
       "room_override_pct": 15,
       "routing": "market_maker",
       "decimals": 4,
       "bought": "2026-10-16",
-      "stop_placed": null
+      "stop_placed": "2026-10-16"
     },
     {
       "symbol": "SNX#4",
@@ -326,12 +326,12 @@
       "qty": 2000,
       "avg_cost": 0.231265,
       "spread_pct": 1.18,
-      "current_stop": null,
+      "current_stop": 0.18911,
       "room_override_pct": 15,
       "routing": "market_maker",
       "decimals": 5,
       "bought": "2026-10-16",
-      "stop_placed": null
+      "stop_placed": "2026-10-16"
     }
   ]
 }
