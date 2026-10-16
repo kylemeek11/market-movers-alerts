@@ -3,24 +3,11 @@
   "_updated": "2026-10-16",
   "_lot_size_usd": 500,
   "_buys_allowed": false,
-  "_buys_note": "24 lots open, max 10",
+  "_buys_note": "22 lots open, max 10",
   "_max_open_lots": 10,
   "_crypto_cost_cap_usd": 40000,
   "_tax_lot_rule": "Standing order for 2026 sales (IRS Notice 2026-20, recorded 2026-10-16): each crypto sale disposes of the lot(s) its order was placed for, as listed here and in the trade log when the order was placed; if an order covering several lots fills only in part, the highest-cost lot goes first. A sale with no recorded lot follows FIFO.",
   "positions": [
-    {
-      "symbol": "BAT",
-      "product": "BAT-USD",
-      "qty": 50000,
-      "avg_cost": 0.1279314,
-      "spread_pct": 1.02,
-      "current_stop": 0.202656,
-      "room_override_pct": 15,
-      "routing": "market_maker",
-      "decimals": 6,
-      "bought": "2026-10-12",
-      "stop_placed": "2026-10-15"
-    },
     {
       "symbol": "XCN",
       "product": "XCN-USD",
@@ -150,19 +137,6 @@
       "decimals": 5,
       "bought": "2026-10-12",
       "stop_placed": "2026-10-12"
-    },
-    {
-      "symbol": "BAT#4",
-      "product": "BAT-USD",
-      "qty": 50000,
-      "avg_cost": 0.18156453,
-      "spread_pct": 1.02,
-      "current_stop": 0.202656,
-      "room_override_pct": 15,
-      "routing": "market_maker",
-      "decimals": 6,
-      "bought": "2026-10-12",
-      "stop_placed": "2026-10-15"
     },
     {
       "symbol": "PYTH#3",
