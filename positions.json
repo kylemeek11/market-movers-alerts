@@ -293,6 +293,45 @@
       "decimals": 6,
       "bought": "2026-10-14",
       "stop_placed": "2026-10-15"
+    },
+    {
+      "symbol": "LINK#5",
+      "product": "LINK-USD",
+      "qty": 25,
+      "avg_cost": 12.6192,
+      "spread_pct": 0.96,
+      "current_stop": null,
+      "room_override_pct": 15,
+      "routing": "market_maker",
+      "decimals": 2,
+      "bought": "2026-10-16",
+      "stop_placed": null
+    },
+    {
+      "symbol": "RENDER#4",
+      "product": "RENDER-USD",
+      "qty": 250,
+      "avg_cost": 1.96196,
+      "spread_pct": 1.03,
+      "current_stop": null,
+      "room_override_pct": 15,
+      "routing": "market_maker",
+      "decimals": 4,
+      "bought": "2026-10-16",
+      "stop_placed": null
+    },
+    {
+      "symbol": "SNX#4",
+      "product": "SNX-USD",
+      "qty": 2000,
+      "avg_cost": 0.231265,
+      "spread_pct": 1.18,
+      "current_stop": null,
+      "room_override_pct": 15,
+      "routing": "market_maker",
+      "decimals": 5,
+      "bought": "2026-10-16",
+      "stop_placed": null
     }
   ]
 }
