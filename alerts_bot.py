@@ -16,17 +16,18 @@ is one CoinGecko call plus a Coinbase candle request for each coin that has
 already cleared the price bar, so a run finishes in seconds.
 
 Two feeds (2026-10-16, Kyle's "quieter alerts"). Only an alert the standing
-rules would let him buy makes a sound: a starred TOP SETUP or BASE BREAKOUT
-with no RED / caution / LATE line, between 7 AM and 7 PM Central, with the
-book under its limits (positions.json: lot count, crypto cost cap, the
-"_buys_allowed" switch, no add to an unlocked coin, one lot per coin per
-day). Its title carries the lot size. Everything else - rate alerts without
-the star, threshold crossings, stocks, relative volume, dips - goes to the
-quiet feed (NTFY_TOPIC + "-quiet", low priority), which is there to scroll,
-not to buzz. Stars that arrive outside the window come back once in a 7 AM
-digest. The peer-reviewed reason: pushes about movers raise retail risk-taking
-(Arnold, Pelster & Subrahmanyam, JFE 2022) and Robinhood users' top buys
-averaged -4.7% over the next 20 days (Barber, Huang, Odean & Schwarz, JF 2022).
+rules would let him buy makes a sound, and only it carries the gold star: a
+BASE BREAKOUT with no RED / LATE / no-catch-up line, between 7 AM and 7 PM
+Central, on a coin not already held, with the book under its limits
+(positions.json: lot count, crypto cost cap, the crash budget, the
+"_buys_allowed" switch). Its title starts with the coin, BUY and the size.
+Everything else - rate alerts, threshold crossings, stocks, relative volume,
+dips - goes to the quiet feed (NTFY_TOPIC + "-quiet", low priority), which is
+there to scroll, not to buzz. Setups that arrive outside the window are
+re-checked once by the first run after 7 AM. The peer-reviewed reason:
+pushes about movers raise retail risk-taking (Arnold, Pelster & Subrahmanyam,
+JFE 2022) and Robinhood users' top buys averaged -4.7% over the next 20 days
+(Barber, Huang, Odean & Schwarz, JF 2022).
 
 Stop watch (same day): a held coin trading under the sell limit of its stop
 (5% under the stop price) gets a loud "check your stops", because a triggered
@@ -360,6 +361,15 @@ TOP_TIER_MIN_RELVOL = 5.0
 # research-2026-10-15.md). It still goes to the quiet feed; True restores the
 # old star, the overnight pass and the loud routing.
 TOP_SETUP_IS_BUY = False
+# A hot week (20%+) is information, not a red line, since 2026-10-16 (Kyle:
+# "If i have rules that go against research take the research's approach").
+# Weekly momentum is the best-replicated crypto pattern (Liu, Tsyvinski & Wu
+# 2022 JF; Liu & Tsyvinski 2021 RFS; Fieberg et al. 2025 JFQA), and coins
+# nearer their highs earn more (Jia et al. 2026 JBF). The one contrary study
+# sorts on the biggest single day of the past month, not the week (Grobys &
+# Junttila 2021). The old caution came from the scheme's own 60-day rate-alert
+# sample (above). Sources: claude/crypto-patterns-research-2026-10-15.md and
+# its round 2 (2026-10-16).
 CAUTION_WEEK_PCT = 20.0
 # LATE (2026-10-05 top-movers study, 150 days, 82 Robinhood coins): a coin
 # already up 30%+ on the day went on to hit -15% before +20% in 63% of cases,
@@ -603,6 +613,21 @@ def in_buy_window(now_ts):
 # now. Only that alert is loud, and its title starts with the coin, "BUY" and
 # the size. The same setup when a rule says no carries one of the other two
 # icons and goes to the quiet feed. No other alert uses the star.
+# The crash budget (2026-10-16, round-2 research). A stop is not a cap on
+# the loss: in a cascade the price jumps through the stop and its 5% collar
+# on every coin at once (Scaillet, Treccani & Trevisan 2020 JFEc; Saef et al.
+# 2024; Ji et al. 2019 IRFA), and on Oct 10, 2025 the coins held now fell
+# 7-75% below where their stops would have been. So a buy also has to fit a
+# crash budget: the loss against cost if every coin fell as far below its
+# stop as it did that day, new lot included, within "_crash_budget_usd"
+# (positions.json; $11,500 + realized P&L since 10-05, kept current by
+# Claude). Each coin's gap is in crash_gaps.json; a coin not there uses
+# its "_default" (the median gap of the coins held on 2026-10-16). Source:
+# claude/backdoor-review-2026-10-15.md section 3 and the round-2 research.
+CRASH_GAPS_FILE = Path(os.environ.get("CRASH_GAPS_FILE", "crash_gaps.json"))
+DEFAULT_CRASH_GAP = 0.21
+NEW_LOT_STOP_ROOM = 0.15                 # a new lot's stop sits 15% under the fill
+
 BUY_TAG = "star"                         # gold star: buy now
 WAIT_TAG = "hourglass_flowing_sand"      # outside 7 AM - 7 PM: the 7 AM run re-checks it
 NO_BUY_TAG = "no_entry_sign"             # a rule or a red line says no
@@ -614,7 +639,8 @@ def buy_decision(symbol, now_ts, book=None, pending=None, half=None):
     The checks are the standing rules (claude/trading-strategy.md): the
     7 AM - 7 PM window, the "_buys_allowed" switch (off while open risk is
     over the limit), at most "_max_open_lots" lots, open crypto cost plus one
-    lot within "_crypto_cost_cap_usd" (no new margin), and no alert buy of a
+    lot within "_crypto_cost_cap_usd" (no new margin), the crash budget when
+    "_crash_budget_usd" is set (see CRASH_GAPS_FILE), and no alert buy of a
     coin already held: under the add rule an add comes only from a calm stop
     check (the coin up under 5% on the day), which a breakout day never is.
     `half` names a yellow flag that halves the lot (a high-vol coin).
@@ -661,9 +687,65 @@ def buy_decision(symbol, now_ts, book=None, pending=None, half=None):
         if stop is None or float(stop) < lot_breakeven(first):
             return False, "held, first lot not locked: no add", 0.0
         return False, "held: adds only at a calm stop check", 0.0
+    size = lot / 2 if half else lot
+    budget = book.get("_crash_budget_usd")
+    if budget is not None:
+        try:
+            gaps = load_crash_gaps()
+            total = crash_case(lots, gaps, extra) + crash_loss_new(size, sym, gaps)
+            budget = float(budget)
+        except (TypeError, ValueError, KeyError) as exc:
+            # A risk limit that cannot be read says no, not yes.
+            return False, f"crash budget check failed ({exc})", 0.0
+        if total > budget:
+            return (False, f"over the crash budget (${total:,.0f} vs "
+                           f"${budget:,.0f})", 0.0)
     if half:
-        return True, f"${lot / 2:,.0f} lot (half size: {half})", lot / 2
-    return True, f"${lot:,.0f} lot", lot
+        return True, f"${size:,.0f} lot (half size: {half})", size
+    return True, f"${size:,.0f} lot", size
+
+
+def load_crash_gaps():
+    """crash_gaps.json as {SYMBOL: fraction}, or {} if it cannot be read."""
+    try:
+        data = json.loads(CRASH_GAPS_FILE.read_text())
+    except Exception as exc:
+        log(f"  crash gaps unreadable ({exc}) - every coin gets the "
+            f"{DEFAULT_CRASH_GAP:.0%} default")
+        return {}
+    return {(k if str(k).startswith("_") else str(k).upper()): v
+            for k, v in (data.items() if isinstance(data, dict) else [])}
+
+
+def crash_gap(gaps, symbol):
+    """How far below its stop this coin fell on Oct 10, 2025 (0-0.95)."""
+    g = (gaps or {}).get(base_symbol(symbol))
+    if not isinstance(g, (int, float)):
+        g = (gaps or {}).get("_default", DEFAULT_CRASH_GAP)
+    try:
+        return min(max(float(g), 0.0), 0.95)
+    except (TypeError, ValueError):
+        return DEFAULT_CRASH_GAP
+
+
+def crash_loss_new(usd, symbol, gaps):
+    """The crash loss of a new lot: its 15% stop, then that coin's gap."""
+    return float(usd) * (1 - (1 - NEW_LOT_STOP_ROOM) * (1 - crash_gap(gaps, symbol)))
+
+
+def crash_case(lots, gaps, pending=()):
+    """Loss against cost if every coin fell as far below its stop as it did
+    on Oct 10, 2025. A lot without a stop is taken at 15% under its cost.
+    Stars sent earlier in the run count as new lots."""
+    loss = 0.0
+    for p in lots or []:
+        qty, cost = float(p["qty"]), float(p["avg_cost"])
+        stop = p.get("current_stop")
+        stop = float(stop) if stop is not None else cost * (1 - NEW_LOT_STOP_ROOM)
+        loss += qty * cost - qty * stop * (1 - crash_gap(gaps, p.get("symbol")))
+    for p in pending or []:
+        loss += crash_loss_new(p.get("usd") or 0, p.get("symbol"), gaps)
+    return loss
 
 
 def buy_gate(symbol, now_ts, book=None, pending=None, half=None):
@@ -673,8 +755,9 @@ def buy_gate(symbol, now_ts, book=None, pending=None, half=None):
 
 
 # The red list (strategy section 1) as the alert lines print it. Any one of
-# them means no buy, so no star.
-RED_PREFIXES = ("RED", "caution", "LATE", "no catch-up")
+# them means no buy, so no star. The hot week left it on 2026-10-16
+# (CAUTION_WEEK_PCT).
+RED_PREFIXES = ("RED", "LATE", "no catch-up")
 
 
 def first_red(lines):
@@ -1133,8 +1216,7 @@ def screen_crypto(allowed=None):
             "dollars": float(vol),
             "cap": float(cap),
             "hour_pct": hour,
-            # The week behind it. Alerts on coins already up 20%+ on the week
-            # averaged a LOSS over 60 days (see CAUTION_WEEK_PCT).
+            # The week behind it (see CAUTION_WEEK_PCT: information only).
             "week_pct": c.get("price_change_percentage_7d_in_currency"),
             # Run maturity. The median crypto run is +10.9% end to end, so a
             # coin already well off its 24h low is late, not early.
@@ -1679,7 +1761,7 @@ def alerts_so_far_today(state, key, now_ts):
 
 
 def tier_lines(r, rv, first):
-    """The star or the caution, from the 60-day study (see TOP_TIER_*).
+    """TOP SETUP and the information lines, from the 60-day study (TOP_TIER_*).
 
     Returns (top, lines). The star needs a Coinbase-confirmed volume figure,
     because that is the tape the numbers were measured on.
@@ -1703,8 +1785,8 @@ def tier_lines(r, rv, first):
         lines.append(f"small coin (${cap / 1e6:.0f}M cap): runs more often, "
                      f"falls just as hard - enter the 15% stop as soon as it fills")
     if week is not None and week >= CAUTION_WEEK_PCT:
-        lines.append(f"caution: already up {week:.0f}% on the week - alerts like "
-                     f"this averaged a loss (the rare monster excepted)")
+        lines.append(f"hot week: up {week:.0f}% on the week (not a veto since 10-16: "
+                     f"weekly momentum research)")
     if r.get("kind") == "crypto" and day is not None and day >= LATE_DAY_PCT:
         lines.append(f"LATE: already up {day:.0f}% today - coins past +{LATE_DAY_PCT:.0f}% "
                      f"hit -15% before +20% about 2 times in 3")
