@@ -40,12 +40,27 @@ when a stop is about to fire; the "too tight, lower it" alerts are gone. The
 evidence: NEAR and WLD both filled overnight on 09-27/28 with the trail
 intact, and the 60-day alert study (project doc "Alert filtering notes")
 measured returns with a trailing-only stop.
+
+Loud failures and order age (added 2026-10-16, Kyle's "stop safety"):
+- A push is tried twice, and advice is marked sent only once ntfy accepts it.
+  Before, a failed push was logged and the advice was still marked sent, so
+  it stayed muted for SUPPRESS_HOURS.
+- A lot that cannot be priced is listed by name, and the run exits non-zero,
+  so the Actions run shows red instead of logging "all stops within
+  tolerance" over coins it never checked.
+- Robinhood cancels a good-til-canceled order 90 calendar days after it is
+  placed (Robinhood Crypto glossary, checked 2026-10-15). Each lot carries
+  "stop_placed", the date its live stop order was entered. From day 80 the
+  check asks for the order to be re-entered at the same price, which resets
+  the clock.
 """
 
 import json
 import math
 import os
 import statistics
+import sys
+import time
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -114,6 +129,14 @@ RATCHET = True
 EXCHANGE_TAKER_FEE_PCT = 0.95
 # Fills land a touch under the stop (NEAR 2026-09-17: $3.40 -> $3.3942, 0.17%).
 SLIPPAGE_PCT = 0.2
+
+# Order age. Robinhood: "a GTC order will expire after 90 calendar days."
+GTC_EXPIRY_DAYS = 90
+EXPIRY_WARN_DAYS = 80
+EXPIRY_SUPPRESS_HOURS = 24
+
+# A failed push is tried once more after this pause.
+PUSH_RETRY_WAIT_S = 3
 
 
 def log(msg):
@@ -434,13 +457,52 @@ def suppressed(ev, state, now_ts):
     return moved < MOVED_PCT
 
 
+def stop_age_days(pos, today=None):
+    """Whole days since the live stop order was placed, or None if unknown."""
+    placed = pos.get("stop_placed")
+    if not placed or pos.get("current_stop") is None:
+        return None
+    try:
+        placed_day = datetime.strptime(str(placed), "%Y-%m-%d").date()
+    except ValueError:
+        return None
+    if today is None:
+        now = local_now()
+        today = (now or datetime.now(timezone.utc)).date()
+    return (today - placed_day).days
+
+
+def expiry_reason(pos, today=None):
+    """The order-age warning for one lot, or None while it is young enough."""
+    age = stop_age_days(pos, today)
+    if age is None or age < EXPIRY_WARN_DAYS:
+        return None
+    placed_day = datetime.strptime(str(pos["stop_placed"]), "%Y-%m-%d").date()
+    expires = placed_day + timedelta(days=GTC_EXPIRY_DAYS)
+    return (f"stop order is {age} days old - Robinhood cancels good-til-"
+            f"canceled orders after {GTC_EXPIRY_DAYS} days (about "
+            f"{expires:%b %d}); cancel it and re-enter it at the same price "
+            f"to reset the clock")
+
+
+def expiry_suppressed(symbol, state, now_ts):
+    """The order-age warning goes out at most once a day per lot."""
+    prev = state.get(f"expiry:{symbol}")
+    if not prev:
+        return False
+    age_h = (now_ts - float(prev.get("ts", 0))) / 3600.0
+    return age_h < EXPIRY_SUPPRESS_HOURS
+
+
 # --- Output -----------------------------------------------------------------
 
 def push(title, message, priority="default", tags="lock", click=None):
+    """Send one notification. True once ntfy accepts it, False if both tries
+    fail (the caller then leaves the advice unmarked, so it is sent again)."""
     if not NTFY_TOPIC:
         log("NTFY_TOPIC is not set - printing instead of sending")
         log(f"  {title}\n{message}")
-        return
+        return True
 
     def ascii_only(s):
         return "".join(ch if 32 <= ord(ch) < 127 else "-" for ch in str(s))
@@ -452,12 +514,17 @@ def push(title, message, priority="default", tags="lock", click=None):
     req = urllib.request.Request(
         f"{NTFY_SERVER}/{NTFY_TOPIC}",
         data=str(message).encode("utf-8"), headers=headers, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            if resp.status >= 300:
-                log(f"  ntfy returned {resp.status}")
-    except Exception as exc:
-        log(f"  push failed: {exc}")
+    for attempt in (1, 2):
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                if resp.status < 300:
+                    return True
+                log(f"  ntfy returned {resp.status} (try {attempt})")
+        except Exception as exc:
+            log(f"  push failed (try {attempt}): {exc}")
+        if attempt == 1:
+            time.sleep(PUSH_RETRY_WAIT_S)
+    return False
 
 
 def describe(ev, why):
@@ -522,17 +589,19 @@ def main():
     log(f"checking {len(positions)} positions "
         f"({'overnight' if overnight else 'daytime'} thresholds)")
 
-    evaluated, to_alert = [], []
+    evaluated, to_alert, skipped, expiring = [], [], [], set()
     for pos in positions:
         product = pos["product"]
         price = fetch_price(product)
         if not price:
             log(f"  {pos['symbol']}: no price, skipping")
+            skipped.append(pos["symbol"])
             continue
         try:
             candles = fetch_candles(product)
         except Exception as exc:
             log(f"  {pos['symbol']}: candles failed ({exc}), skipping")
+            skipped.append(pos["symbol"])
             continue
         ev = evaluate(pos, price, candles)
         evaluated.append(ev)
@@ -540,6 +609,11 @@ def main():
             log(f"  {ev['symbol']}: only {ev['nights']} clean nights, "
                 f"using floor width")
         why = alert_reason(ev, overnight)
+        if not why:
+            age_why = expiry_reason(pos)
+            if age_why and (force or not expiry_suppressed(ev["symbol"], state, now_ts)):
+                why = age_why
+                expiring.add(ev["symbol"])
         if force and not why:
             why = "manual run - full rundown"
         log(f"  {ev['symbol']}: ${fmt(price, ev['decimals'])} "
@@ -548,12 +622,14 @@ def main():
             f"{' HELD' if ev['ratcheted'] else ' FLOORED' if ev['floored'] else ''}"
             f"{' locked' if ev['locked'] and not ev['floored'] else ''}"
             f"{' | ' + why if why else ''}")
-        if why and (force or not suppressed(ev, state, now_ts)):
+        if why and (force or ev["symbol"] in expiring
+                    or not suppressed(ev, state, now_ts)):
             to_alert.append((ev, why))
         elif why:
             log(f"    suppressed - same advice sent within "
                 f"{SUPPRESS_HOURS}h")
 
+    push_failed = False
     if to_alert:
         symbols = ", ".join(ev["symbol"] for ev, _ in to_alert)
         total_risk = sum(ev["risk"] for ev in evaluated)
@@ -566,22 +642,49 @@ def main():
             body += "\nCancel the old stop before entering the new one."
         body += ("\nPrices are Coinbase's; Robinhood's quote can sit "
                  "~0.5% either side, so re-check on the ticket.")
-        push(
+        if skipped:
+            body += (f"\nNot checked (no price): {', '.join(skipped)}")
+        sent = push(
             title=alert_title(to_alert),
             message=body,
             priority="max" if overnight else "high",
             tags="lock",
-            click="https://robinhood.com/crypto/" + to_alert[0][0]["symbol"],
+            click="https://robinhood.com/crypto/" + to_alert[0][0]["symbol"].split("#")[0],
         )
-        for ev, _ in to_alert:
-            state[ev["symbol"]] = {"stop": ev["stop"], "ts": now_ts}
-        log(f"pushed: {symbols}")
+        if sent:
+            for ev, _ in to_alert:
+                if ev["symbol"] in expiring:
+                    state[f"expiry:{ev['symbol']}"] = {"ts": now_ts}
+                else:
+                    state[ev["symbol"]] = {"stop": ev["stop"], "ts": now_ts}
+            log(f"pushed: {symbols}")
+        else:
+            push_failed = True
+            log(f"push FAILED: {symbols} - left unmarked so the next run "
+                f"sends it again")
+    elif skipped:
+        log(f"nothing to push for the {len(evaluated)} lots that were checked")
     else:
         log("nothing to do - all stops within tolerance")
 
+    if skipped:
+        log(f"{len(skipped)} of {len(positions)} lots NOT checked (no price): "
+            f"{', '.join(skipped)}")
+        if not evaluated:
+            if not push("Stop check could not price any coin",
+                        f"None of the {len(positions)} lots could be priced from "
+                        f"Coinbase this run, so no stop was checked. The stop "
+                        f"orders on Robinhood are unaffected.",
+                        priority="high", tags="warning"):
+                push_failed = True
+
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     STATE_FILE.write_text(json.dumps(state, indent=2))
+    if push_failed or skipped:
+        log("exiting with an error so this run shows as failed")
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
