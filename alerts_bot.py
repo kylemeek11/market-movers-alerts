@@ -351,6 +351,15 @@ STOP_HINT_PCT = 15.0                   # the stop size the hint is sized for
 # about the average, not a ban, and the tags leave the decision on the phone.
 TOP_TIER_MAX_DAY_PCT = 10.0
 TOP_TIER_MIN_RELVOL = 5.0
+# TOP SETUP is an alert only, not a buy signal (2026-10-16; claude/trading-
+# strategy.md section 0). Its +11% came from one 60-day window to 09-27; in the
+# month after, starred rate alerts averaged -5.3% under the 15% trail against
+# +6.3% for random hours on the same coins (n=21, claude/alert-patterns-
+# 2026-10-15.md). The replayed scheme never included it, and a short-window
+# volume spike is the published pump-and-dump profile (claude/crypto-patterns-
+# research-2026-10-15.md). It still goes to the quiet feed; True restores the
+# old star, the overnight pass and the loud routing.
+TOP_SETUP_IS_BUY = False
 CAUTION_WEEK_PCT = 20.0
 # LATE (2026-10-05 top-movers study, 150 days, 82 Robinhood coins): a coin
 # already up 30%+ on the day went on to hit -15% before +20% in 63% of cases,
@@ -1545,8 +1554,13 @@ def tier_lines(r, rv, first):
             and day is not None and day < TOP_TIER_MAX_DAY_PCT
             and rv is not None and rv >= TOP_TIER_MIN_RELVOL):
         top = True
-        lines.append(f"TOP SETUP - day still under {TOP_TIER_MAX_DAY_PCT:.0f}%, {rv:.0f}x volume: "
-                     f"these averaged +11% under a 15% stop")
+        if TOP_SETUP_IS_BUY:
+            lines.append(f"TOP SETUP - day still under {TOP_TIER_MAX_DAY_PCT:.0f}%, {rv:.0f}x volume: "
+                         f"these averaged +11% under a 15% stop")
+        else:
+            lines.append(f"TOP SETUP (alert only since 10-16) - day under {TOP_TIER_MAX_DAY_PCT:.0f}%, "
+                         f"{rv:.0f}x volume: +11% in the Aug-Sep study, -5% the month after "
+                         f"(random hours +6%) - not a buy signal")
     cap = r.get("cap")
     if r.get("kind") == "crypto" and cap and cap < SMALL_CAP_USD:
         lines.append(f"small coin (${cap / 1e6:.0f}M cap): runs more often, "
@@ -1638,7 +1652,8 @@ def send_rate(pending, fired, now_ts, overnight, night_bar=OVERNIGHT_RATE_PCT,
         # SETUP passes (see green_pass) - it is the one rate alert the
         # checklist calls a buy, and the move it reports usually began hours
         # before anyone is awake.
-        if overnight and move < night_bar and not (top and green_pass(state, now_ts)):
+        if overnight and move < night_bar and not (
+                top and TOP_SETUP_IS_BUY and green_pass(state, now_ts)):
             held += 1
             continue
 
@@ -1666,7 +1681,8 @@ def send_rate(pending, fired, now_ts, overnight, night_bar=OVERNIGHT_RATE_PCT,
         # The star needs no RED / caution / LATE line (2026-10-16: it used to
         # ignore them), and it buzzes only when the standing rules allow a
         # buy right now (route_star). Everything else goes to the quiet feed.
-        star = top and not red_lines(lines)
+        # TOP SETUP is an alert only since 2026-10-16 (TOP_SETUP_IS_BUY).
+        star = top and TOP_SETUP_IS_BUY and not red_lines(lines)
         title = f"{r['symbol']} +{move:.1f}% in {elapsed_min:.0f} min"
         if star:
             quiet, title = route_star(r, "* " + title, now_ts, state)
