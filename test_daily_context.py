@@ -290,7 +290,12 @@ SENT.clear()
 ab.send_rate([("rate:crypto:SOL", plain, 3.4, 60, 2.8)], fired, ONE_AM, True, state=state)
 check("ordinary overnight rate alert is still held", SENT == [] and fired == {})
 ab.send_rate([("rate:crypto:HYPE", hype, 3.4, 60, 6.0)], fired, ONE_AM, True, state=state)
-check("TOP SETUP passes the overnight bar", len(SENT) == 1 and SENT[0][0].startswith("* HYPE"),
+check("TOP SETUP is an alert only since 10-16: held overnight like any rate alert",
+      SENT == [] and fired == {} and not state.get("night_pass", {}).get("count"), SENT[:1])
+# With the old routing switched back on it would pass the bar, once per night pass.
+ab.TOP_SETUP_IS_BUY = True
+ab.send_rate([("rate:crypto:HYPE", hype, 3.4, 60, 6.0)], fired, ONE_AM, True, state=state)
+check("old routing: TOP SETUP passes the overnight bar", len(SENT) == 1 and SENT[0][0].startswith("* HYPE"),
       SENT[:1])
 check("...at max priority", SENT[0][2].get("priority") == "max")
 check("...and counts against the night cap", state["night_pass"]["count"] == 1)
@@ -299,6 +304,7 @@ state["night_pass"]["count"] = dc.NIGHT_PASS_MAX
 fired = {}
 ab.send_rate([("rate:crypto:HYPE", hype, 3.4, 60, 6.0)], fired, ONE_AM, True, state=state)
 check("cap reached: even a TOP SETUP waits for morning", SENT == [] and fired == {})
+ab.TOP_SETUP_IS_BUY = False
 
 # Breakout alert body.
 state = {"alerts_today": {}, "streak": {},
@@ -401,8 +407,8 @@ check("...and kept for the 7 AM digest",
       [s["symbol"] for s in state.get("night_stars", [])] == ["HYPE"], state.get("night_stars"))
 SENT.clear()
 ab.send_rate([("rate:crypto:HYPE", hype, 3.4, 60, 6.0)], {}, ONE_AM, True, state=state)
-check("1 AM TOP SETUP: quiet feed, not max",
-      SENT and SENT[0][2].get("quiet") is True and SENT[0][2].get("priority") == "low", SENT[:1])
+check("1 AM TOP SETUP: held until morning (alert only), never max",
+      SENT == [] or (SENT[0][2].get("quiet") is True and SENT[0][2].get("priority") == "low"), SENT[:1])
 
 print()
 if FAILURES:
