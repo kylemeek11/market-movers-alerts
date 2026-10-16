@@ -14,6 +14,24 @@ Disturb does the silencing, and only the biggest movers ask to break through.
 Deliberately light: stocks need only the screener's quote payload and crypto
 is one CoinGecko call plus a Coinbase candle request for each coin that has
 already cleared the price bar, so a run finishes in seconds.
+
+Two feeds (2026-10-16, Kyle's "quieter alerts"). Only an alert the standing
+rules would let him buy makes a sound: a starred TOP SETUP or BASE BREAKOUT
+with no RED / caution / LATE line, between 7 AM and 7 PM Central, with the
+book under its limits (positions.json: lot count, crypto cost cap, the
+"_buys_allowed" switch, no add to an unlocked coin, one lot per coin per
+day). Its title carries the lot size. Everything else - rate alerts without
+the star, threshold crossings, stocks, relative volume, dips - goes to the
+quiet feed (NTFY_TOPIC + "-quiet", low priority), which is there to scroll,
+not to buzz. Stars that arrive outside the window come back once in a 7 AM
+digest. The peer-reviewed reason: pushes about movers raise retail risk-taking
+(Arnold, Pelster & Subrahmanyam, JFE 2022) and Robinhood users' top buys
+averaged -4.7% over the next 20 days (Barber, Huang, Odean & Schwarz, JF 2022).
+
+Stop watch (same day): a held coin trading under the sell limit of its stop
+(5% under the stop price) gets a loud "check your stops", because a triggered
+crypto stop cannot sell below that and Robinhood may cancel it after five
+minutes. A failed push is tried twice and the run exits non-zero.
 """
 
 from __future__ import annotations
@@ -368,6 +386,35 @@ STATE_FILE = Path(os.environ.get("STATE_FILE", "state/alerts.json"))
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "").strip()
 NTFY_SERVER = os.environ.get("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
 
+# The quiet feed (2026-10-16). Same secret, so nothing new to set up; a name
+# ntfy would refuse (over 64 characters) falls back to the main topic at low
+# priority. Never log either name: this repository's logs are public.
+NTFY_TOPIC_QUIET = (os.environ.get("NTFY_TOPIC_QUIET", "").strip()
+                    or (NTFY_TOPIC + "-quiet" if NTFY_TOPIC else ""))
+if len(NTFY_TOPIC_QUIET) > 64:
+    NTFY_TOPIC_QUIET = ""
+QUIET_PRIORITY = "low"
+
+# The book and the standing rules (claude/trading-strategy.md, section 0).
+POSITIONS_FILE = Path(os.environ.get("POSITIONS_FILE", "positions.json"))
+BUY_START_HOUR = 7          # rule 1: nothing bought 7 PM - 7 AM Central
+BUY_END_HOUR = 19
+DEFAULT_LOT_USD = 500
+DEFAULT_MAX_LOTS = 10
+DEFAULT_CRYPTO_CAP_USD = 40_000
+NIGHT_DIGEST_MAX_AGE_H = 14
+
+# Stop watch. A triggered Robinhood crypto stop is a market sell collared 5%
+# under the stop; past that it cannot fill and may be canceled after five
+# minutes (Robinhood Crypto glossary, checked 2026-10-15).
+COLLAR_PCT = 5.0
+COLLAR_MARGIN_PCT = 1.0     # Coinbase vs Robinhood quote gap
+CRASH_MIN_COINS = 3
+STOP_WATCH_COOLDOWN_SEC = 6 * 3600
+
+PUSH_RETRY_WAIT_S = 3
+PUSH_STATS = {"failed": 0}
+
 COINGECKO_URL = (
     "https://api.coingecko.com/api/v3/coins/markets"
     "?vs_currency=usd&order=market_cap_desc"
@@ -440,14 +487,24 @@ def session_fraction():
 
 
 def push(title, message, priority="default", tags="chart_with_upwards_trend",
-         click=None):
-    """Send one notification. Headers must be ASCII; the body may be UTF-8."""
+         click=None, quiet=False):
+    """Send one notification. Headers must be ASCII; the body may be UTF-8.
+
+    quiet=True sends it to the quiet feed at low priority. Returns True once
+    ntfy accepts it and False after two failed tries; a failure is counted
+    and main() then exits non-zero, so the run shows red.
+    """
+    import time
     import urllib.request
 
-    if not NTFY_TOPIC:
+    topic = NTFY_TOPIC
+    if quiet:
+        priority = QUIET_PRIORITY
+        topic = NTFY_TOPIC_QUIET or NTFY_TOPIC
+    if not topic:
         log("NTFY_TOPIC is not set - printing instead of sending")
-        log(f"  {title} | {message}")
-        return
+        log(f"  {'[quiet] ' if quiet else ''}{title} | {message}")
+        return True
 
     def ascii_only(s):
         return "".join(ch if 32 <= ord(ch) < 127 else "-" for ch in str(s))
@@ -462,17 +519,251 @@ def push(title, message, priority="default", tags="chart_with_upwards_trend",
         headers["Click"] = ascii_only(click)
 
     req = urllib.request.Request(
-        f"{NTFY_SERVER}/{NTFY_TOPIC}",
+        f"{NTFY_SERVER}/{topic}",
         data=str(message).encode("utf-8"),
         headers=headers,
         method="POST",
     )
+    for attempt in (1, 2):
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                if resp.status < 300:
+                    return True
+                log(f"  ntfy returned {resp.status} (try {attempt})")
+        except Exception as exc:
+            log(f"  push failed (try {attempt}): {exc}")
+        if attempt == 1:
+            time.sleep(PUSH_RETRY_WAIT_S)
+    PUSH_STATS["failed"] += 1
+    return False
+
+
+# --- The standing rules: which alert may buzz ----------------------------------
+
+def load_book():
+    """positions.json as a dict, or None if it cannot be read."""
     try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            if resp.status >= 300:
-                log(f"  ntfy returned {resp.status}")
+        return json.loads(POSITIONS_FILE.read_text())
     except Exception as exc:
-        log(f"  push failed: {exc}")
+        log(f"  positions file unreadable ({exc}) - buy alerts go to the quiet feed")
+        return None
+
+
+def base_symbol(sym):
+    """'PYTH#3' -> 'PYTH'."""
+    return str(sym or "").split("#", 1)[0].upper()
+
+
+def lot_number(sym):
+    """'PYTH' is lot 1, 'PYTH#3' lot 3."""
+    s = str(sym or "")
+    if "#" not in s:
+        return 1
+    try:
+        return int(s.split("#", 1)[1])
+    except ValueError:
+        return 99
+
+
+def lot_breakeven(p):
+    """Same arithmetic as stop_check.breakeven_stop, unrounded."""
+    fee = 0.0 if p.get("routing") == "market_maker" else 0.95
+    return float(p["avg_cost"]) / (1 - (fee + 0.2) / 100.0)
+
+
+def local_at(now_ts):
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.fromtimestamp(now_ts, ZoneInfo(USER_TZ))
+    except Exception:
+        return None
+
+
+def in_buy_window(now_ts):
+    """Rule 1: buys only from 7 AM to 7 PM Central."""
+    local = local_at(now_ts)
+    if local is None:
+        return True          # a zone lookup failure must not silence buys
+    return BUY_START_HOUR <= local.hour < BUY_END_HOUR
+
+
+def buy_gate(symbol, now_ts, book=None):
+    """May a starred alert on `symbol` be bought right now? (ok, note).
+
+    The checks are the standing rules: the 7 AM - 7 PM window, the
+    "_buys_allowed" switch (off while open risk is over the limit), at most
+    "_max_open_lots" lots, open crypto cost plus one lot within
+    "_crypto_cost_cap_usd" (no new margin), one lot per coin per day, and no
+    add unless the coin's first lot has its stop at or above break-even. The
+    note becomes part of the title: the lot size when it passes, the reason
+    when it does not.
+    """
+    if not in_buy_window(now_ts):
+        return False, "outside 7 AM-7 PM CT: no buys"
+    if book is None:
+        book = load_book()
+    if not book:
+        return False, "positions file unreadable"
+    if book.get("_buys_allowed") is False:
+        return False, str(book.get("_buys_note") or "buys paused")
+    lots = book.get("positions") or []
+    max_lots = int(book.get("_max_open_lots") or DEFAULT_MAX_LOTS)
+    if len(lots) >= max_lots:
+        return False, f"{len(lots)} lots open, max {max_lots}"
+    lot = float(book.get("_lot_size_usd") or DEFAULT_LOT_USD)
+    cost = sum(float(p["qty"]) * float(p["avg_cost"]) for p in lots)
+    cap = float(book.get("_crypto_cost_cap_usd") or DEFAULT_CRYPTO_CAP_USD)
+    if cost + lot > cap:
+        return False, f"crypto cost ${cost:,.0f} is at the ${cap:,.0f} cap"
+    sym = base_symbol(symbol)
+    held = [p for p in lots if base_symbol(p.get("symbol")) == sym]
+    if held:
+        local = local_at(now_ts)
+        today = (local or datetime.fromtimestamp(now_ts, timezone.utc)).date().isoformat()
+        if any(str(p.get("bought")) == today for p in held):
+            return False, "already bought today"
+        first = min(held, key=lambda p: lot_number(p.get("symbol")))
+        stop = first.get("current_stop")
+        if stop is None or float(stop) < lot_breakeven(first):
+            return False, "held, first lot not locked: no add"
+        return True, f"add: half lot ${lot / 2:,.0f}"
+    return True, f"${lot:,.0f} lot"
+
+
+def red_lines(lines):
+    """True if the alert carries a line that takes the star away."""
+    return any(str(ln).startswith(("RED", "caution", "LATE")) for ln in lines)
+
+
+def remember_night_star(state, r, title, now_ts):
+    """Keep a star that arrived outside the buy window for the 7 AM digest."""
+    if state is None:
+        return
+    stars = state.setdefault("night_stars", [])
+    if any(s.get("symbol") == r["symbol"] for s in stars):
+        return
+    stars.append({"symbol": r["symbol"], "title": title,
+                  "price": r.get("price"), "ts": now_ts})
+    del stars[:-20]
+
+
+def route_star(r, title, now_ts, state=None):
+    """Where a starred, red-free alert goes: (quiet, title)."""
+    if r.get("kind") != "crypto":
+        return True, title
+    ok, note = buy_gate(r["symbol"], now_ts)
+    if ok:
+        return False, f"{title} - {note}"
+    if not in_buy_window(now_ts):
+        remember_night_star(state, r, title, now_ts)
+    return True, f"{title} [{note}]"
+
+
+def send_night_digest(state, rows, now_ts):
+    """Rule 1: an overnight star waits for the 7 AM check. The first run
+    inside the window lists them once: loud if one can be bought, quiet if
+    the book's limits say no."""
+    if state is None or not state.get("night_stars") or not in_buy_window(now_ts):
+        return
+    fresh = [s for s in state["night_stars"]
+             if now_ts - float(s.get("ts") or 0) <= NIGHT_DIGEST_MAX_AGE_H * 3600]
+    state["night_stars"] = []
+    if not fresh:
+        return
+    prices = {r["symbol"]: r.get("price") for r in rows or []}
+    lines, any_ok = [], False
+    for s in fresh:
+        sym, then, now_p = s["symbol"], s.get("price"), prices.get(s["symbol"])
+        local = local_at(float(s["ts"]))
+        when = local.strftime("%I:%M %p").lstrip("0") if local else "overnight"
+        ok, note = buy_gate(sym, now_ts)
+        any_ok = any_ok or ok
+        move = (f", now {money(now_p)} ({(now_p / then - 1) * 100:+.1f}%)"
+                if now_p and then else "")
+        lines.append(f"{sym}: starred at {when}, {money(then)}{move} - {note}")
+    lines.append("Still green now = the entry. Otherwise let it go.")
+    title = "Overnight stars: " + ", ".join(s["symbol"] for s in fresh)
+    if push(title, "\n".join(lines), priority="high", tags="star",
+            quiet=not any_ok) is False:
+        state["night_stars"] = fresh          # try again on the next run
+    log(f"  NIGHT DIGEST {len(fresh)} star(s){'' if any_ok else ' (quiet: no buy allowed)'}")
+
+
+def coinbase_price(product, timeout=6):
+    """Coinbase's last trade for one product, or None."""
+    import urllib.request
+    req = urllib.request.Request(f"{COINBASE_API}/products/{product}/ticker",
+                                 headers={"User-Agent": "market-movers-alerts/1.0"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        price = float(json.loads(resp.read().decode("utf-8")).get("price") or 0)
+    return price if price > 0 else None
+
+
+def check_live_stops(state, now_ts, book=None, price_of=None):
+    """Loud "check your stops" for held coins (2026-10-16).
+
+    Robinhood turns a triggered crypto stop into a market sell collared 5%
+    under the stop price. If the coin trades below that, the sell cannot fill
+    and Robinhood may cancel it after five minutes, which leaves the lot
+    unprotected and nothing in positions.json would know. So a held coin
+    under that limit gets a max-priority push, as does a book where several
+    coins are at their stops at once. Six hours between repeats per coin.
+    """
+    book = book if book is not None else load_book()
+    if not book or state is None:
+        return
+    price_of = price_of or coinbase_price
+    lots = [p for p in book.get("positions") or [] if p.get("current_stop") is not None]
+    if not lots:
+        return
+    watch = state.setdefault("stop_watch", {})
+    prices = {}
+    for p in lots:
+        prod = p.get("product")
+        if prod and prod not in prices:
+            try:
+                prices[prod] = price_of(prod)
+            except Exception as exc:
+                log(f"  stop watch: no price for {prod} ({exc})")
+                prices[prod] = None
+    under, at_stop = {}, {}
+    for p in lots:
+        px = prices.get(p.get("product"))
+        if not px:
+            continue
+        stop = float(p["current_stop"])
+        coin = base_symbol(p.get("symbol"))
+        limit = stop * (1 - COLLAR_PCT / 100.0)
+        if px <= stop:
+            at_stop[coin] = px
+        if px < limit * (1 - COLLAR_MARGIN_PCT / 100.0):
+            under.setdefault(coin, []).append((p.get("symbol"), stop, limit, px))
+    for coin, hits in sorted(under.items()):
+        if now_ts - float(watch.get(coin) or 0) < STOP_WATCH_COOLDOWN_SEC:
+            continue
+        px = hits[0][3]
+        body = [f"{coin} is at {money(px)}, under the sell limit of "
+                f"{len(hits)} stop{'s' if len(hits) > 1 else ''}:"]
+        for sym, stop, limit, _ in hits:
+            body.append(f"  {sym}: stop {money(stop)}, sells no lower than {money(limit)}")
+        body.append("A triggered stop cannot sell this far down, and Robinhood "
+                    "may cancel it if it does not fill within 5 minutes. Open "
+                    "Robinhood: is each stop still open, filled or canceled?")
+        if push(f"CHECK STOPS: {coin} under its stop limit", "\n".join(body),
+                priority="max", tags="rotating_light",
+                click=f"https://robinhood.com/crypto/{coin}") is not False:
+            watch[coin] = now_ts
+        log(f"  STOP WATCH {coin} {money(px)} under the limit of {len(hits)} stop(s)")
+    if (len(at_stop) >= CRASH_MIN_COINS
+            and now_ts - float(watch.get("_crash") or 0) >= STOP_WATCH_COOLDOWN_SEC):
+        coins = sorted(at_stop)
+        if push(f"CRASH CHECK: {len(coins)} coins at their stops",
+                f"{', '.join(coins)} are at or under their stop prices, so those "
+                f"stops should be filling. Check that each one filled or is "
+                f"still open, and report the fills so the records match.",
+                priority="max", tags="rotating_light") is not False:
+            watch["_crash"] = now_ts
+        log(f"  CRASH CHECK {len(coins)} coins at their stops: {', '.join(coins)}")
 
 
 # --- Screens ----------------------------------------------------------------
@@ -1350,7 +1641,6 @@ def send_rate(pending, fired, now_ts, overnight, night_bar=OVERNIGHT_RATE_PCT,
         if overnight and move < night_bar and not (top and green_pass(state, now_ts)):
             held += 1
             continue
-        fired[fkey] = now_ts
 
         lines = [f"{r['name']}  -  {money(r['price'])}",
                  f"+{move:.1f}% in {elapsed_min:.0f} min on {rv:.0f}x volume"]
@@ -1373,27 +1663,37 @@ def send_rate(pending, fired, now_ts, overnight, night_bar=OVERNIGHT_RATE_PCT,
             lines.append(f"break-even {money(breakeven)}  -  "
                          f"{STOP_HINT_PCT:.0f}% stop {money(stop)}")
 
-        # Repeats averaged a loss in the study, so they buzz at the quieter
-        # priority; a first alert stays high and a top setup carries a star.
-        if overnight:
+        # The star needs no RED / caution / LATE line (2026-10-16: it used to
+        # ignore them), and it buzzes only when the standing rules allow a
+        # buy right now (route_star). Everything else goes to the quiet feed.
+        star = top and not red_lines(lines)
+        title = f"{r['symbol']} +{move:.1f}% in {elapsed_min:.0f} min"
+        if star:
+            quiet, title = route_star(r, "* " + title, now_ts, state)
+        else:
+            quiet = True
+        if quiet:
+            priority = QUIET_PRIORITY
+        elif overnight:
             priority = "max"
         elif not first:
             priority = "default"
         else:
             priority = "high"
-        title = f"{r['symbol']} +{move:.1f}% in {elapsed_min:.0f} min"
-        if top:
-            title = "* " + title
-        push(title,
-             "\n".join(lines),
-             priority=priority,
-             tags="star" if top else "zap",
-             click=robinhood_url(r))
+        ok = push(title,
+                  "\n".join(lines),
+                  priority=priority,
+                  tags="star" if star else "zap",
+                  click=robinhood_url(r),
+                  quiet=quiet)
+        if ok is not False:
+            fired[fkey] = now_ts
         src = r.get("rv_source")
         log(f"  RATE {r['symbol']} +{move:.1f}% over {elapsed_min:.0f}min "
             f"on {rv:.1f}x volume{' (' + src + ')' if src else ''} "
             f"(day {r['pct']:+.1f}%)"
-            f"{' TOP' if top else ''}{'' if first else ' repeat'}")
+            f"{' TOP' if top else ''}{'' if first else ' repeat'}"
+            f"{' quiet' if quiet else ' LOUD'}")
     if held:
         log(f"  {held} rate signals held until morning")
 
@@ -1419,15 +1719,16 @@ def collect_relvol(rows, fired, now_ts, fraction):
 
 def send_relvol(pending, fired, now_ts, overnight):
     for key, r, ratio in pending[:MAX_ALERTS_PER_RUN]:
-        fired[key] = now_ts
         body = (f"{r['name']}\n"
                 f"now +{r['pct']:.1f}%  -  ${r['price']:,.2f}\n"
                 f"{ratio:.1f}x normal volume for this time of day")
-        push(f"{r['symbol']} unusual volume {ratio:.1f}x",
-             body,
-             priority="high",
-             tags="eyes",
-             click=robinhood_url(r))
+        if push(f"{r['symbol']} unusual volume {ratio:.1f}x",
+                body,
+                priority=QUIET_PRIORITY,
+                tags="eyes",
+                click=robinhood_url(r),
+                quiet=True) is not False:
+            fired[key] = now_ts
         log(f"  RELVOL {r['symbol']} {ratio:.1f}x on +{r['pct']:.1f}%")
 
 
@@ -1455,8 +1756,6 @@ def send_alerts(pending, fired, high_level, overnight, state=None, btc_price=Non
             # pick it up again if it is still running.
             held += 1
             continue
-        fired[key] = level
-        sent += 1
         priority = priority_for(level, high_level, overnight)
         body = format_body(r)
         # A threshold crossing counts toward the multi-day memory but not the
@@ -1473,12 +1772,16 @@ def send_alerts(pending, fired, high_level, overnight, state=None, btc_price=Non
         extra += context_lines(state, r, btc_price, now_ts)
         if extra:
             body += "\n" + "\n".join(extra)
-        push(f"{r['symbol']} crossed +{level:.0f}%",
-             body,
-             priority=priority,
-             click=robinhood_url(r))
+        # A crossing is a mover, never a buy under the rules: quiet feed.
+        if push(f"{r['symbol']} crossed +{level:.0f}%",
+                body,
+                priority=QUIET_PRIORITY,
+                click=robinhood_url(r),
+                quiet=True) is not False:
+            fired[key] = level
+            sent += 1
         log(f"  ALERT {r['symbol']} +{r['pct']:.1f}% "
-            f"(crossed {level:.0f}%, {priority})")
+            f"(crossed {level:.0f}%, {priority}, quiet feed)")
 
     if held:
         log(f"  {held} held until morning (below the overnight bar)")
@@ -1487,8 +1790,9 @@ def send_alerts(pending, fired, high_level, overnight, state=None, btc_price=Non
     if extra > 0 and sent:
         push("More movers crossing",
              f"{extra} more crossed a level. They'll follow shortly.",
-             priority="default",
-             tags="fire")
+             priority=QUIET_PRIORITY,
+             tags="fire",
+             quiet=True)
         log(f"  {extra} queued for the next run")
 
 
@@ -1504,8 +1808,8 @@ def send_dip(coin, st, price):
         f"watching because: {coin['why']}" if coin.get("why") else "",
     ]).strip()
     push(f"{coin['symbol']} dip turning up ({st['off_high']:.0f}% off high)",
-         body, priority="high", tags="arrow_heading_up",
-         click=robinhood_url(row))
+         body, priority=QUIET_PRIORITY, tags="arrow_heading_up",
+         click=robinhood_url(row), quiet=True)
     log(f"  DIP {coin['symbol']} {st['off_high']:.1f}% off 7d high, "
         f"+{st['off_low']:.1f}% off 12h low")
 
@@ -1526,7 +1830,6 @@ def send_breakouts(pending, fired, now_ts, overnight, state=None, btc_price=None
         if overnight and not green_pass(state, now_ts):
             held += 1
             continue
-        fired[key] = dc.utc_day(now_ts)
 
         lines = [f"{r['name']}  -  {money(r['price'])}"]
         lines.extend(dc.breakout_lines(r, ctx))
@@ -1538,17 +1841,23 @@ def send_breakouts(pending, fired, now_ts, overnight, state=None, btc_price=None
         lines.append(f"break-even {money(breakeven)}  -  "
                      f"{STOP_HINT_PCT:.0f}% stop {money(stop)}")
 
-        red = any(ln.startswith(("RED", "caution", "LATE")) for ln in lines)
+        red = red_lines(lines)
         title = f"{r['symbol']} base breakout +{ctx['day_pct']:.1f}% today"
-        if not red:
-            title = "* " + title
-        push(title, "\n".join(lines),
-             priority="max" if overnight else "high",
-             tags="zap" if red else "star",
-             click=robinhood_url(r))
+        if red:
+            quiet = True
+        else:
+            quiet, title = route_star(r, "* " + title, now_ts, state)
+        priority = QUIET_PRIORITY if quiet else ("max" if overnight else "high")
+        ok = push(title, "\n".join(lines),
+                  priority=priority,
+                  tags="zap" if red else "star",
+                  click=robinhood_url(r),
+                  quiet=quiet)
+        if ok is not False:
+            fired[key] = dc.utc_day(now_ts)
         log(f"  BREAKOUT {r['symbol']} +{ctx['day_pct']:.1f}% today from a "
             f"{ctx['base14']:.0f}% base, {ctx['vs50_pct']:+.0f}% vs 50-day"
-            f"{' (red lines)' if red else ''}")
+            f"{' (red lines)' if red else ''}{' quiet' if quiet else ' LOUD'}")
     if held:
         log(f"  {held} base breakouts held - overnight cap reached")
 
@@ -1658,12 +1967,16 @@ def run_watchlist(crypto_rows, marks, fired, now_ts, overnight, state=None,
 def main():
     # The test push comes first so it works at any hour, market open or not.
     if os.environ.get("TEST_PUSH") == "1":
-        push("Market Movers test",
-             "Phone alerts are wired up correctly.\nTap to open Robinhood.",
-             priority="default", tags="white_check_mark",
-             click="https://robinhood.com/stocks/")
-        log("Test notification sent")
-        return 0
+        ok = push("Market Movers test",
+                  "Phone alerts are wired up correctly.\nTap to open Robinhood.",
+                  priority="default", tags="white_check_mark",
+                  click="https://robinhood.com/stocks/")
+        quiet_ok = push("Market Movers test - quiet feed",
+                        "This is the quiet feed: alerts that are not a buy "
+                        "under the rules. It does not need to buzz.",
+                        tags="white_check_mark", quiet=True)
+        log("Test notifications sent" if ok and quiet_ok else "Test notification FAILED")
+        return 0 if ok and quiet_ok else 1
 
     force = os.environ.get("FORCE_RUN") == "1"
     overnight = in_overnight()
@@ -1734,6 +2047,17 @@ def main():
     if not screen_down:
         run_breakouts(crypto_rows, fired, now_ts, overnight, state, tradable,
                       btc_price)
+    # Rule 1: stars that came in outside 7 AM - 7 PM, once, at the first run
+    # inside the window.
+    try:
+        send_night_digest(state, crypto_rows, now_ts)
+    except Exception as exc:
+        log(f"  overnight digest failed ({exc}) - alerts unaffected")
+    # Held coins under a stop's sell limit, or several at their stops.
+    try:
+        check_live_stops(state, now_ts)
+    except Exception as exc:
+        log(f"  stop watch failed ({exc}) - alerts unaffected")
 
     crypto_pending = filter_tradable(
         collect_pending(crypto_movers, CRYPTO_ALERT_LEVELS, fired, "crypto"),
@@ -1811,6 +2135,10 @@ def main():
         f"{slow_ready} with {RATE_WINDOW_MIN:.0f}min+ of history")
 
     save_state(state)
+    if PUSH_STATS["failed"]:
+        log(f"{PUSH_STATS['failed']} notification(s) failed after two tries - "
+            f"exiting with an error so this run shows as failed")
+        return 1
     return 0
 
 
