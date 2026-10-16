@@ -677,9 +677,11 @@ try:
 finally:
     ab.push, ab.load_book = real_push, real_book
 t1, b1, p1, g1 = sent[0]
-check("first GRT alert is a starred top setup at high priority", t1.startswith("* GRT") and p1 == "high" and g1 == "star", (t1, p1, g1))
-check("...with the lot size in the title", t1.endswith("- $500 lot"), t1)
-check("...and the body says so and quotes a 15% stop", "TOP SETUP" in b1 and "15% stop" in b1, b1)
+check("first GRT alert is a TOP SETUP, alert only since 10-16: no star, quiet feed",
+      not t1.startswith("*") and p1 == "low" and g1 == "zap", (t1, p1, g1))
+check("...with no lot size in the title", "lot" not in t1, t1)
+check("...and the body names it, says it is not a buy signal, and quotes a 15% stop",
+      "TOP SETUP (alert only" in b1 and "not a buy signal" in b1 and "15% stop" in b1, b1)
 t2, b2, p2, g2 = sent[1]
 check("the repeat an hour later is unstarred and goes to the quiet feed", not t2.startswith("*") and p2 == "low" and "alert #2 today" in b2, (t2, p2, b2))
 t3, b3, p3, g3 = sent[2]
@@ -846,6 +848,10 @@ sent = []
 real_push, real_book = ab.push, ab.load_book
 ab.push = lambda title, message, **k: sent.append((title, message, k))
 try:
+    # The buy gate and the 7 AM digest are shared with BASE BREAKOUT. They are
+    # exercised here through the rate path with the old TOP SETUP routing
+    # switched back on; the default (TOP SETUP alert only) is checked after.
+    ab.TOP_SETUP_IS_BUY = True
     grt = {"kind": "crypto", "symbol": "GRT", "name": "The Graph", "price": 0.0295, "pct": 6.3,
            "week_pct": 8.0, "low_24h": 0.0271, "rv_source": "coinbase"}
     ab.load_book = lambda: unlocked
@@ -902,8 +908,24 @@ try:
                    False, state=None, now_ts=NOON_CT)
     check("a threshold crossing is a mover: quiet feed",
           sent and sent[-1][2].get("quiet") is True and sent[-1][2].get("priority") == "low", sent[-1:])
+    # The default since 2026-10-16: a TOP SETUP is an alert only.
+    ab.TOP_SETUP_IS_BUY = False
+    ab.load_book = lambda: OPEN_BOOK
+    sent.clear()
+    st = {"alerts_today": {}, "streak": {}}
+    ab.send_rate([("rate:crypto:GRT", dict(grt), 3.9, 71.0, 6.2)], {}, NOON_CT, False, state=st)
+    title, body, kw = sent[-1]
+    check("default: a TOP SETUP at noon with room in the book stays quiet, no star",
+          not title.startswith("*") and kw.get("quiet") is True and kw.get("priority") == "low"
+          and "not a buy signal" in body, (title, kw))
+    sent.clear()
+    st = {"alerts_today": {}, "streak": {}}
+    ab.send_rate([("rate:crypto:GRT", dict(grt), 3.9, 71.0, 6.2)], {}, NINE_PM, False, state=st)
+    check("default: a 9 PM TOP SETUP is not kept for the 7 AM digest",
+          sent and not st.get("night_stars"), st.get("night_stars"))
 finally:
     ab.push, ab.load_book = real_push, real_book
+    ab.TOP_SETUP_IS_BUY = False
 
 print("\nStop watch: held coins under a stop's sell limit")
 sent = []
