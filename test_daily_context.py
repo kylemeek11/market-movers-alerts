@@ -120,6 +120,20 @@ lines = dc.btc_lines({"day_pct": 1.0, "ret3_pct": 6.0, "days": [2.0, 2.0, 2.0]},
                      {"ret3_pct": 4.0})
 check("...but a coin already following BTC gets nothing", lines == [], lines)
 check("no BTC data -> no lines", dc.btc_lines(None) == [])
+lines = dc.btc_lines({"day_pct": 0.5, "ret3_pct": 1.0, "days": [0.5, 1.0, 1.0], "off_high_pct": -10.6})
+check("BTC more than 10% below its 30-day high -> red line",
+      len(lines) == 1 and lines[0].startswith("RED: BTC 11% below its 30-day high"), lines)
+lines = dc.btc_lines({"day_pct": 0.5, "ret3_pct": 1.0, "days": [0.5, 1.0, 1.0], "off_high_pct": -9.5})
+check("...9.5% below is not", lines == [], lines)
+st_btc = {"daily": {"BTC": dict(dc.summarize(candles(flat_history(85000.0), today_close=85500.0), NOW),
+                                high30=97000.0)}}
+off = dc.btc_context(st_btc, 85500.0, dc.utc_day(NOW))["off_high_pct"]
+check("btc_context carries BTC's distance from its 30-day high",
+      abs(off - (85500.0 / 97000.0 - 1) * 100) < 1e-9, off)
+check("...and context_lines puts the red line on every crypto alert",
+      any(ln.startswith("RED: BTC 12% below its 30-day high")
+          for ln in dc.context_lines(st_btc, {"kind": "crypto", "symbol": "XYZ", "price": 1.0}, 85500.0, NOW)),
+      dc.context_lines(st_btc, {"kind": "crypto", "symbol": "XYZ", "price": 1.0}, 85500.0, NOW))
 
 print("coin_lines")
 check("calm coin near its high -> nothing", dc.coin_lines({"vol30": 2.7, "off_high_pct": -4.0}) == [])
@@ -269,7 +283,15 @@ def no_network(url, timeout=None):
 
 dc._get_json = no_network
 SENT = []
-ab.push = lambda title, message, **kw: SENT.append((title, message, kw))
+ALL = []          # every push, for the gold-star invariant at the end
+
+
+def capture(title, message, **kw):
+    SENT.append((title, message, kw))
+    ALL.append((title, message, kw))
+
+
+ab.push = capture
 ab.robinhood_tradable = lambda row, cache: True
 # These checks are about the alert format, so the buy gate is held open:
 # an empty book and an all-day window. The real window is checked at the end.
@@ -295,7 +317,8 @@ check("TOP SETUP is an alert only since 10-16: held overnight like any rate aler
 # With the old routing switched back on it would pass the bar, once per night pass.
 ab.TOP_SETUP_IS_BUY = True
 ab.send_rate([("rate:crypto:HYPE", hype, 3.4, 60, 6.0)], fired, ONE_AM, True, state=state)
-check("old routing: TOP SETUP passes the overnight bar", len(SENT) == 1 and SENT[0][0].startswith("* HYPE"),
+check("old routing: TOP SETUP passes the overnight bar",
+      len(SENT) == 1 and SENT[0][0].startswith("HYPE - BUY") and SENT[0][2].get("tags") == "star",
       SENT[:1])
 check("...at max priority", SENT[0][2].get("priority") == "max")
 check("...and counts against the night cap", state["night_pass"]["count"] == 1)
@@ -317,7 +340,9 @@ state["base_seen"] = {"HYPE": NOW - 15 * 60}        # seen a quarter-hour ago
 ab.run_breakouts([hype], fired, NOW, False, state, {}, 85500.0)
 check("breakout alert sent", len(SENT) == 1, SENT)
 title, body, kw = SENT[0]
-check("starred title with the day move", title.startswith("* HYPE base breakout +"), title)
+check("gold-star title: the coin, BUY, the size, the day move",
+      title.startswith("HYPE - BUY $500 lot - base breakout +") and body.startswith("BUY NOW: $500 lot"),
+      (title, body))
 check("body names the base and the trend", "14-day base" in body and "vs 50-day avg" in body, body)
 check("body carries the study line", "run 30% / stop 11%" in body)
 check("not on Bitstamp -> market-maker routing line", "market-maker routing only" in body, body)
@@ -334,8 +359,9 @@ hot = dict(hype, week_pct=27.0)
 SENT.clear()
 state["base_seen"] = {"HYPE": NOW - 15 * 60}
 ab.run_breakouts([hot], {}, NOW, False, state, {}, 85500.0)
-check("hot week -> caution line, no star", SENT and not SENT[0][0].startswith("*")
-      and "caution: already up 27%" in SENT[0][1] and SENT[0][2].get("tags") == "zap", SENT[:1])
+check("hot week -> caution line, no star, quiet", SENT and SENT[0][0].startswith("HYPE - not a buy - ")
+      and "caution: already up 27%" in SENT[0][1] and SENT[0][2].get("tags") == "no_entry_sign"
+      and SENT[0][2].get("quiet") is True, SENT[:1])
 state["daily"]["BTC"]["prev_close"] = 90000.0    # BTC -5% today
 SENT.clear()
 state["base_seen"] = {"HYPE": NOW - 15 * 60}
@@ -360,12 +386,15 @@ ab.send_alerts([(15.0, "crypto:HYPE", dict(hype, pct=16.0))], {}, ab.CRYPTO_HIGH
 check("a threshold alert a day later drops the stale checklist lines",
       SENT and "half size" not in SENT[0][1], SENT[:1])
 
-# Overnight breakout: passes, then the cap holds it.
+# Overnight breakout: passes, then the cap holds it. A new run, so the star
+# the breakout above earned no longer counts (main() resets it every run).
 state["night_pass"] = {}
+state["run_stars"] = []
 SENT.clear()
 state["base_seen"] = {"HYPE": ONE_AM - 15 * 60}
 ab.run_breakouts([hype], {}, ONE_AM, True, state, {}, 85500.0)
-check("overnight breakout goes out at max", SENT and SENT[0][2].get("priority") == "max", SENT[:1])
+check("overnight breakout goes out at max, with the star",
+      SENT and SENT[0][2].get("priority") == "max" and SENT[0][2].get("tags") == "star", SENT[:1])
 state["night_pass"]["count"] = dc.NIGHT_PASS_MAX
 SENT.clear()
 state["base_seen"] = {"HYPE": ONE_AM - 15 * 60}
@@ -400,15 +429,22 @@ state = {"alerts_today": {}, "streak": {}, "night_pass": {},
 SENT.clear()
 state["base_seen"] = {"HYPE": NOW - 15 * 60}
 ab.run_breakouts([hype], {}, NOW, False, state, {}, 85500.0)
-check("9 PM breakout: starred but quiet, outside the buy window",
-      SENT and SENT[0][0].startswith("* HYPE base breakout") and SENT[0][2].get("quiet") is True
-      and "outside 7 AM-7 PM" in SENT[0][0], SENT[:1])
+check("9 PM breakout: the hourglass, quiet, not a buy yet",
+      SENT and SENT[0][0].startswith("HYPE - not a buy yet - base breakout")
+      and SENT[0][2].get("quiet") is True and SENT[0][2].get("tags") == "hourglass_flowing_sand"
+      and SENT[0][1].startswith("NOT A BUY YET: outside 7 AM-7 PM CT"), SENT[:1])
 check("...and kept for the 7 AM digest",
       [s["symbol"] for s in state.get("night_stars", [])] == ["HYPE"], state.get("night_stars"))
 SENT.clear()
 ab.send_rate([("rate:crypto:HYPE", hype, 3.4, 60, 6.0)], {}, ONE_AM, True, state=state)
 check("1 AM TOP SETUP: held until morning (alert only), never max",
       SENT == [] or (SENT[0][2].get("quiet") is True and SENT[0][2].get("priority") == "low"), SENT[:1])
+
+stars = [p for p in ALL if p[2].get("tags") == "star"]
+check("the gold star is only ever on a loud BUY, and every BUY has it",
+      stars and all(" - BUY " in p[0] and not p[2].get("quiet") for p in stars)
+      and all(" - BUY " not in p[0] for p in ALL if p[2].get("tags") != "star"),
+      [(p[0], p[2].get("tags")) for p in ALL])
 
 print()
 if FAILURES:
