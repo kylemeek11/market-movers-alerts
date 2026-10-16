@@ -1,0 +1,12 @@
+{
+  "_source": "How far below its stop (15% under the 12-hour-low close) each coin's low went in the crash of Oct 10, 2025 (Coinbase hourly): claude/backdoor-review-2026-10-15.md section 3. alerts_bot.py uses it for the crash budget (positions.json _crash_budget_usd). A coin not listed uses _default, the median gap of the coins held on 2026-10-16.",
+  "_default": 0.21,
+  "AERO": 0.1,
+  "BAT": 0.07,
+  "LINK": 0.14,
+  "PYTH": 0.54,
+  "RENDER": 0.75,
+  "SNX": 0.49,
+  "UNI": 0.21,
+  "XCN": 0.12
+}
