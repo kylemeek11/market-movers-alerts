@@ -596,82 +596,194 @@ def in_buy_window(now_ts):
     return BUY_START_HOUR <= local.hour < BUY_END_HOUR
 
 
-def buy_gate(symbol, now_ts, book=None):
-    """May a starred alert on `symbol` be bought right now? (ok, note).
+# The gold star (2026-10-16): one unmistakable buy signal on the phone. ntfy
+# shows a tag that names an emoji in front of the title, so the star is
+# reserved for one thing: a buy signal (BASE BREAKOUT, or TOP SETUP while
+# TOP_SETUP_IS_BUY) with no red line, that every standing rule allows right
+# now. Only that alert is loud, and its title starts with the coin, "BUY" and
+# the size. The same setup when a rule says no carries one of the other two
+# icons and goes to the quiet feed. No other alert uses the star.
+BUY_TAG = "star"                         # gold star: buy now
+WAIT_TAG = "hourglass_flowing_sand"      # outside 7 AM - 7 PM: the 7 AM run re-checks it
+NO_BUY_TAG = "no_entry_sign"             # a rule or a red line says no
 
-    The checks are the standing rules: the 7 AM - 7 PM window, the
-    "_buys_allowed" switch (off while open risk is over the limit), at most
-    "_max_open_lots" lots, open crypto cost plus one lot within
-    "_crypto_cost_cap_usd" (no new margin), one lot per coin per day, and no
-    add unless the coin's first lot has its stop at or above break-even. The
-    note becomes part of the title: the lot size when it passes, the reason
-    when it does not.
+
+def buy_decision(symbol, now_ts, book=None, pending=None, half=None):
+    """May a buy signal on `symbol` be bought right now? (ok, note, usd).
+
+    The checks are the standing rules (claude/trading-strategy.md): the
+    7 AM - 7 PM window, the "_buys_allowed" switch (off while open risk is
+    over the limit), at most "_max_open_lots" lots, open crypto cost plus one
+    lot within "_crypto_cost_cap_usd" (no new margin), and no alert buy of a
+    coin already held: under the add rule an add comes only from a calm stop
+    check (the coin up under 5% on the day), which a breakout day never is.
+    `half` names a yellow flag that halves the lot (a high-vol coin).
+    `pending` lists the buys already starred earlier in the same run
+    ({"symbol", "usd"}); they count as bought, so two stars in one run cannot
+    overrun the book together. Buys made since positions.json was last
+    updated are not known here. The note becomes part of the title: the size
+    when it passes, the reason when it does not. usd is the size to buy, 0
+    when the answer is no.
     """
     if not in_buy_window(now_ts):
-        return False, "outside 7 AM-7 PM CT: no buys"
+        return False, "outside 7 AM-7 PM CT: no buys", 0.0
     if book is None:
         book = load_book()
     if not book:
-        return False, "positions file unreadable"
+        return False, "positions file unreadable", 0.0
     if book.get("_buys_allowed") is False:
-        return False, str(book.get("_buys_note") or "buys paused")
+        return False, str(book.get("_buys_note") or "buys paused"), 0.0
     lots = book.get("positions") or []
+    extra = [p for p in pending or [] if isinstance(p, dict)]
     max_lots = int(book.get("_max_open_lots") or DEFAULT_MAX_LOTS)
-    if len(lots) >= max_lots:
-        return False, f"{len(lots)} lots open, max {max_lots}"
+    if len(lots) + len(extra) >= max_lots:
+        if extra:
+            return (False, f"{len(lots)} lots open + {len(extra)} starred this run, "
+                           f"max {max_lots}", 0.0)
+        return False, f"{len(lots)} lots open, max {max_lots}", 0.0
     lot = float(book.get("_lot_size_usd") or DEFAULT_LOT_USD)
-    cost = sum(float(p["qty"]) * float(p["avg_cost"]) for p in lots)
+    cost = (sum(float(p["qty"]) * float(p["avg_cost"]) for p in lots)
+            + sum(float(p.get("usd") or 0) for p in extra))
     cap = float(book.get("_crypto_cost_cap_usd") or DEFAULT_CRYPTO_CAP_USD)
     if cost + lot > cap:
-        return False, f"crypto cost ${cost:,.0f} is at the ${cap:,.0f} cap"
+        return False, f"crypto cost ${cost:,.0f} is at the ${cap:,.0f} cap", 0.0
     sym = base_symbol(symbol)
+    if any(base_symbol(p.get("symbol")) == sym for p in extra):
+        return False, "already starred this run", 0.0
     held = [p for p in lots if base_symbol(p.get("symbol")) == sym]
     if held:
         local = local_at(now_ts)
         today = (local or datetime.fromtimestamp(now_ts, timezone.utc)).date().isoformat()
         if any(str(p.get("bought")) == today for p in held):
-            return False, "already bought today"
+            return False, "already bought today", 0.0
         first = min(held, key=lambda p: lot_number(p.get("symbol")))
         stop = first.get("current_stop")
         if stop is None or float(stop) < lot_breakeven(first):
-            return False, "held, first lot not locked: no add"
-        return True, f"add: half lot ${lot / 2:,.0f}"
-    return True, f"${lot:,.0f} lot"
+            return False, "held, first lot not locked: no add", 0.0
+        return False, "held: adds only at a calm stop check", 0.0
+    if half:
+        return True, f"${lot / 2:,.0f} lot (half size: {half})", lot / 2
+    return True, f"${lot:,.0f} lot", lot
+
+
+def buy_gate(symbol, now_ts, book=None, pending=None, half=None):
+    """buy_decision without the size: (ok, note)."""
+    ok, note, _ = buy_decision(symbol, now_ts, book, pending, half)
+    return ok, note
+
+
+# The red list (strategy section 1) as the alert lines print it. Any one of
+# them means no buy, so no star.
+RED_PREFIXES = ("RED", "caution", "LATE", "no catch-up")
+
+
+def first_red(lines):
+    """The first line that takes the star away, cut to its headline, or None."""
+    for ln in lines:
+        s = str(ln)
+        if s.startswith(RED_PREFIXES):
+            return s.split(" - ", 1)[0]
+    return None
 
 
 def red_lines(lines):
     """True if the alert carries a line that takes the star away."""
-    return any(str(ln).startswith(("RED", "caution", "LATE")) for ln in lines)
+    return first_red(lines) is not None
 
 
-def remember_night_star(state, r, title, now_ts):
-    """Keep a star that arrived outside the buy window for the 7 AM digest."""
+def half_reason(lines):
+    """The yellow flag that halves the lot (strategy section 1), or None."""
+    return "high-vol coin" if any(str(ln).startswith("high-vol coin") for ln in lines) else None
+
+
+def remember_night_star(state, r, what, now_ts, kind="base"):
+    """Keep a buy signal that arrived outside the buy window for the 7 AM run."""
     if state is None:
         return
     stars = state.setdefault("night_stars", [])
     if any(s.get("symbol") == r["symbol"] for s in stars):
         return
-    stars.append({"symbol": r["symbol"], "title": title,
+    stars.append({"symbol": r["symbol"], "what": what, "kind": kind,
                   "price": r.get("price"), "ts": now_ts})
     del stars[:-20]
 
 
-def route_star(r, title, now_ts, state=None):
-    """Where a starred, red-free alert goes: (quiet, title)."""
+def buy_verdict(r, what, now_ts, state=None, kind="base", lines=()):
+    """What the phone shows for a buy signal: a dict with quiet, title, tags,
+    head (the first body line) and usd (the size, 0 unless it is a buy).
+
+    `lines` is the alert body so far, where the red lines and the half-size
+    flag are read. The gold star goes only to a signal with no red line that
+    the standing rules allow right now. One that arrives outside 7 AM - 7 PM
+    is kept for the first run inside the window, which re-checks it
+    (send_night_digest).
+    """
+    sym = r["symbol"]
+    red = first_red(lines)
+    if red:
+        return {"quiet": True, "tags": NO_BUY_TAG, "usd": 0.0,
+                "title": f"{sym} - not a buy - {what} ({red})",
+                "head": f"NOT A BUY: {red}"}
     if r.get("kind") != "crypto":
-        return True, title
-    ok, note = buy_gate(r["symbol"], now_ts)
+        return {"quiet": True, "tags": "zap", "usd": 0.0,
+                "title": f"{sym} {what}", "head": "NOT A BUY: stocks are not in the scheme"}
+    ok, note, usd = buy_decision(sym, now_ts, pending=(state or {}).get("run_stars"),
+                                 half=half_reason(lines))
     if ok:
-        return False, f"{title} - {note}"
+        return {"quiet": False, "tags": BUY_TAG, "usd": usd,
+                "title": f"{sym} - BUY {note} - {what}",
+                "head": f"BUY NOW: {note}, then the 15% stop below as soon as it fills"}
     if not in_buy_window(now_ts):
-        remember_night_star(state, r, title, now_ts)
-    return True, f"{title} [{note}]"
+        remember_night_star(state, r, what, now_ts, kind)
+        return {"quiet": True, "tags": WAIT_TAG, "usd": 0.0,
+                "title": f"{sym} - not a buy yet - {what} (7 AM re-check)",
+                "head": ("NOT A BUY YET: outside 7 AM-7 PM CT. The 7 AM run re-checks it "
+                         "and sends a gold star only if it is still a buy.")}
+    return {"quiet": True, "tags": NO_BUY_TAG, "usd": 0.0,
+            "title": f"{sym} - not a buy - {what} ({note})",
+            "head": f"NOT A BUY: {note}"}
 
 
-def send_night_digest(state, rows, now_ts):
-    """Rule 1: an overnight star waits for the 7 AM check. The first run
-    inside the window lists them once: loud if one can be bought, quiet if
-    the book's limits say no."""
+def note_star(state, r, v):
+    """Count a sent gold star against the book for the rest of the run."""
+    if state is not None and v.get("usd"):
+        state.setdefault("run_stars", []).append(
+            {"symbol": base_symbol(r["symbol"]), "usd": float(v["usd"])})
+
+
+def morning_check(state, row, btc_price, now_ts, pending=None):
+    """Is an overnight signal a buy at the first run inside the window?
+    (ok, note, usd). The live alert's own tests on the live price: a green
+    BASE BREAKOUT, no red line, then the book's limits, with the half-size
+    flag. A TOP SETUP kept overnight passes only if it is a base breakout by
+    then: its rate trigger is hours old and cannot be re-checked."""
+    if not row or not row.get("price"):
+        return False, "no live price", 0.0
+    if dc is None:
+        return False, "no daily context", 0.0
+    sym = str(row.get("symbol") or "").upper()
+    try:
+        ctx = dc.coin_context((state.get("daily") or {}).get(sym), row["price"],
+                              dc.utc_day(now_ts))
+        green, why = dc.is_breakout(ctx, now_ts)
+        lines = tier_lines(row, None, False)[1] + dc.context_lines(state, row, btc_price, now_ts)
+    except Exception as exc:
+        return False, f"re-check failed ({exc})", 0.0
+    if not green:
+        return False, f"not a base breakout now ({why})", 0.0
+    red = first_red(lines)
+    if red:
+        return False, red, 0.0
+    return buy_decision(sym, now_ts, pending=pending, half=half_reason(lines))
+
+
+def send_night_digest(state, rows, now_ts, btc_price=None):
+    """Rule 1: a buy signal that arrives outside 7 AM - 7 PM waits for the
+    first run inside the window, which re-checks each one on the live price
+    (morning_check). Each one still a buy gets its own gold-star alert, loud,
+    with a tap through to its Robinhood page. The rest go to the quiet feed in
+    one list, each with its reason. Nothing from the night gets a star
+    without that re-check."""
     if state is None or not state.get("night_stars") or not in_buy_window(now_ts):
         return
     fresh = [s for s in state["night_stars"]
@@ -679,23 +791,48 @@ def send_night_digest(state, rows, now_ts):
     state["night_stars"] = []
     if not fresh:
         return
-    prices = {r["symbol"]: r.get("price") for r in rows or []}
-    lines, any_ok = [], False
+    by_sym = {str(r.get("symbol") or "").upper(): r for r in rows or []}
+    retry, rest, bought = [], [], []
     for s in fresh:
-        sym, then, now_p = s["symbol"], s.get("price"), prices.get(s["symbol"])
-        local = local_at(float(s["ts"]))
+        sym = str(s.get("symbol") or "").upper()
+        row = by_sym.get(sym)
+        then, now_p = s.get("price"), (row or {}).get("price")
+        local = local_at(float(s.get("ts") or now_ts))
         when = local.strftime("%I:%M %p").lstrip("0") if local else "overnight"
-        ok, note = buy_gate(sym, now_ts)
-        any_ok = any_ok or ok
+        what = s.get("what") or ("base breakout" if s.get("kind", "base") == "base" else "setup")
         move = (f", now {money(now_p)} ({(now_p / then - 1) * 100:+.1f}%)"
                 if now_p and then else "")
-        lines.append(f"{sym}: starred at {when}, {money(then)}{move} - {note}")
-    lines.append("Still green now = the entry. Otherwise let it go.")
-    title = "Overnight stars: " + ", ".join(s["symbol"] for s in fresh)
-    if push(title, "\n".join(lines), priority="high", tags="star",
-            quiet=not any_ok) is False:
-        state["night_stars"] = fresh          # try again on the next run
-    log(f"  NIGHT DIGEST {len(fresh)} star(s){'' if any_ok else ' (quiet: no buy allowed)'}")
+        seen = f"{what} at {when}, {money(then)}{move}"
+        ok, note, usd = morning_check(state, row, btc_price, now_ts,
+                                      pending=state.get("run_stars"))
+        if not ok:
+            rest.append((s, f"{sym}: {seen} - {note}"))
+            continue
+        breakeven, stop = cost_hints(now_p)
+        body = [f"BUY NOW: {note}, then the 15% stop below as soon as it fills",
+                f"{row.get('name') or sym}  -  {money(now_p)}",
+                f"overnight: {seen}",
+                "re-checked now: still a base breakout, no red line, the book has room",
+                f"break-even {money(breakeven)}  -  {STOP_HINT_PCT:.0f}% stop {money(stop)}"]
+        if push(f"{sym} - BUY {note} - overnight breakout, still a buy",
+                "\n".join(body), priority="high", tags=BUY_TAG,
+                click=robinhood_url(row), quiet=False) is False:
+            retry.append(s)                   # try again on the next run
+        else:
+            note_star(state, row, {"usd": usd})
+            bought.append(sym)
+    if rest:
+        title = ("Overnight setups, not a buy now: "
+                 + ", ".join(str(s.get("symbol") or "?") for s, _ in rest))
+        lines = [ln for _, ln in rest]
+        lines.append("No gold star = no buy. Let these go.")
+        if push(title, "\n".join(lines), priority=QUIET_PRIORITY, tags=NO_BUY_TAG,
+                quiet=True) is False:
+            retry.extend(s for s, _ in rest)
+    state["night_stars"] = retry
+    log(f"  NIGHT DIGEST {len(fresh)} overnight signal(s): "
+        f"{len(bought)} still a buy{' (' + ', '.join(bought) + ')' if bought else ''}, "
+        f"{len(rest)} not" + (f", {len(retry)} kept to resend" if retry else ""))
 
 
 def coinbase_price(product, timeout=6):
@@ -1678,16 +1815,16 @@ def send_rate(pending, fired, now_ts, overnight, night_bar=OVERNIGHT_RATE_PCT,
             lines.append(f"break-even {money(breakeven)}  -  "
                          f"{STOP_HINT_PCT:.0f}% stop {money(stop)}")
 
-        # The star needs no RED / caution / LATE line (2026-10-16: it used to
-        # ignore them), and it buzzes only when the standing rules allow a
-        # buy right now (route_star). Everything else goes to the quiet feed.
-        # TOP SETUP is an alert only since 2026-10-16 (TOP_SETUP_IS_BUY).
-        star = top and TOP_SETUP_IS_BUY and not red_lines(lines)
+        # A rate alert is a mover, not a buy: quiet feed, no star. TOP SETUP
+        # is an alert only since 2026-10-16; with TOP_SETUP_IS_BUY it goes
+        # through the same gold-star verdict as a BASE BREAKOUT (buy_verdict).
         title = f"{r['symbol']} +{move:.1f}% in {elapsed_min:.0f} min"
-        if star:
-            quiet, title = route_star(r, "* " + title, now_ts, state)
-        else:
-            quiet = True
+        tags, quiet, v = "zap", True, None
+        if top and TOP_SETUP_IS_BUY:
+            v = buy_verdict(r, f"+{move:.1f}% in {elapsed_min:.0f} min (TOP SETUP)",
+                            now_ts, state, kind="top", lines=lines)
+            title, tags, quiet = v["title"], v["tags"], v["quiet"]
+            lines.insert(0, v["head"])
         if quiet:
             priority = QUIET_PRIORITY
         elif overnight:
@@ -1699,17 +1836,19 @@ def send_rate(pending, fired, now_ts, overnight, night_bar=OVERNIGHT_RATE_PCT,
         ok = push(title,
                   "\n".join(lines),
                   priority=priority,
-                  tags="star" if star else "zap",
+                  tags=tags,
                   click=robinhood_url(r),
                   quiet=quiet)
         if ok is not False:
             fired[fkey] = now_ts
+            if v:
+                note_star(state, r, v)
         src = r.get("rv_source")
         log(f"  RATE {r['symbol']} +{move:.1f}% over {elapsed_min:.0f}min "
             f"on {rv:.1f}x volume{' (' + src + ')' if src else ''} "
             f"(day {r['pct']:+.1f}%)"
             f"{' TOP' if top else ''}{'' if first else ' repeat'}"
-            f"{' quiet' if quiet else ' LOUD'}")
+            f"{' quiet' if quiet else ' LOUD, gold star'}")
     if held:
         log(f"  {held} rate signals held until morning")
 
@@ -1837,7 +1976,9 @@ def send_breakouts(pending, fired, now_ts, overnight, state=None, btc_price=None
     14 daily closes sat in a 15% range, up 5%+ today, above the 50-day
     average, on a weekday. One alert per coin per UTC day. Red lines from the
     checklist (BTC, hot week, LATE, deep dip) travel with it, and when any is
-    present the title loses its star: the setup is right but the day is not.
+    present it is not a buy: the setup is right but the day is not. The gold
+    star and the loud feed are for a breakout the rules allow right now
+    (buy_verdict).
     """
     if dc is None:
         return
@@ -1857,23 +1998,23 @@ def send_breakouts(pending, fired, now_ts, overnight, state=None, btc_price=None
         lines.append(f"break-even {money(breakeven)}  -  "
                      f"{STOP_HINT_PCT:.0f}% stop {money(stop)}")
 
-        red = red_lines(lines)
-        title = f"{r['symbol']} base breakout +{ctx['day_pct']:.1f}% today"
-        if red:
-            quiet = True
-        else:
-            quiet, title = route_star(r, "* " + title, now_ts, state)
+        red = first_red(lines)
+        v = buy_verdict(r, f"base breakout +{ctx['day_pct']:.1f}% today", now_ts,
+                        state, kind="base", lines=lines)
+        lines.insert(0, v["head"])
+        quiet = v["quiet"]
         priority = QUIET_PRIORITY if quiet else ("max" if overnight else "high")
-        ok = push(title, "\n".join(lines),
+        ok = push(v["title"], "\n".join(lines),
                   priority=priority,
-                  tags="zap" if red else "star",
+                  tags=v["tags"],
                   click=robinhood_url(r),
                   quiet=quiet)
         if ok is not False:
             fired[key] = dc.utc_day(now_ts)
+            note_star(state, r, v)
         log(f"  BREAKOUT {r['symbol']} +{ctx['day_pct']:.1f}% today from a "
             f"{ctx['base14']:.0f}% base, {ctx['vs50_pct']:+.0f}% vs 50-day"
-            f"{' (red lines)' if red else ''}{' quiet' if quiet else ' LOUD'}")
+            f"{' (red lines)' if red else ''}{' quiet' if quiet else ' LOUD, gold star'}")
     if held:
         log(f"  {held} base breakouts held - overnight cap reached")
 
@@ -1984,7 +2125,9 @@ def main():
     # The test push comes first so it works at any hour, market open or not.
     if os.environ.get("TEST_PUSH") == "1":
         ok = push("Market Movers test",
-                  "Phone alerts are wired up correctly.\nTap to open Robinhood.",
+                  "Phone alerts are wired up correctly.\nTap to open Robinhood.\n"
+                  "A buy comes with a gold star in front of the title; "
+                  "nothing else has one.",
                   priority="default", tags="white_check_mark",
                   click="https://robinhood.com/stocks/")
         quiet_ok = push("Market Movers test - quiet feed",
@@ -1998,6 +2141,9 @@ def main():
     overnight = in_overnight()
     now_ts = datetime.now(timezone.utc).timestamp()
     state = load_state()
+    # Gold stars sent this run count against the book (buy_decision). Reset
+    # every run and dropped before the save: a star is not a fill.
+    state["run_stars"] = []
     fired = state["fired"]
     tradable = state["tradable"]
     marks = state["marks"]
@@ -2063,10 +2209,10 @@ def main():
     if not screen_down:
         run_breakouts(crypto_rows, fired, now_ts, overnight, state, tradable,
                       btc_price)
-    # Rule 1: stars that came in outside 7 AM - 7 PM, once, at the first run
-    # inside the window.
+    # Rule 1: buy signals that came in outside 7 AM - 7 PM, re-checked once at
+    # the first run inside the window; a gold star for each one still a buy.
     try:
-        send_night_digest(state, crypto_rows, now_ts)
+        send_night_digest(state, crypto_rows, now_ts, btc_price)
     except Exception as exc:
         log(f"  overnight digest failed ({exc}) - alerts unaffected")
     # Held coins under a stop's sell limit, or several at their stops.
@@ -2089,6 +2235,7 @@ def main():
             import yfinance as yf
         except ImportError:
             log("yfinance is not installed")
+            state.pop("run_stars", None)
             save_state(state)
             return 2
 
@@ -2150,6 +2297,7 @@ def main():
     log(f"tracking {len(marks)} names, {with_prior} with a prior stamp, "
         f"{slow_ready} with {RATE_WINDOW_MIN:.0f}min+ of history")
 
+    state.pop("run_stars", None)
     save_state(state)
     if PUSH_STATS["failed"]:
         log(f"{PUSH_STATS['failed']} notification(s) failed after two tries - "
