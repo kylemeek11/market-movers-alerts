@@ -84,6 +84,12 @@ BTC_3D_DROP_PCT = 5.0          # red: BTC down this much over 3 days
 BTC_DUMP_DAY_PCT = 5.0         # a BTC day this bad...
 BTC_DUMP_WAIT_DAYS = 3         # ...means no buys for this many days
 BTC_3D_RISE_PCT = 5.0          # "no catch-up trade" context
+# Red: BTC more than this below its own 30-day high (strategy section 1,
+# added 2026-10-11 from claude/regime-and-time-stops-2026-10-11.md: with no
+# other red light on, entries made there averaged -7.3% with one in five
+# positive, against +1.0% within 10%). On the red list since then; built
+# 2026-10-16, when the gold star began to mean "every rule says buy".
+BTC_OFF_HIGH_PCT = 10.0
 LAGGARD_3D_PCT = 1.0           # a coin under this after a BTC rise has not followed
 
 THIN_BOOK_USD = 100_000.0      # Bitstamp bids within 15% of mid below this: thin
@@ -277,6 +283,7 @@ def btc_context(state, btc_price, today=None):
     if ctx is None:
         return None
     return {"day_pct": ctx["day_pct"], "ret3_pct": ctx["ret3_pct"],
+            "off_high_pct": ctx.get("off_high_pct"),
             "days": list(entry.get("days") or [])}
 
 
@@ -321,6 +328,10 @@ def btc_lines(btc, coin_ctx=None):
                          f"day averaged -10.7% with 71% stopped out; wait "
                          f"{BTC_DUMP_WAIT_DAYS} days")
             break
+    off = btc.get("off_high_pct")
+    if off is not None and off < -BTC_OFF_HIGH_PCT:
+        lines.append(f"RED: BTC {-off:.0f}% below its 30-day high - entries made there "
+                     f"averaged -7.3%, one in five positive")
     if (r3 is not None and r3 >= BTC_3D_RISE_PCT and coin_ctx
             and coin_ctx.get("ret3_pct") is not None
             and coin_ctx["ret3_pct"] < LAGGARD_3D_PCT):
