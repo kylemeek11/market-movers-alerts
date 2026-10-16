@@ -1,9 +1,9 @@
 {
-  "_note": "Edit this when you buy, sell, or enter new stop orders. 'current_stop' is what you actually have live on Robinhood right now - set it to null if you have no stop on that coin, and the next run will tell you what to enter. 'spread_pct' is the 'Buy spread (x%)' figure from the coin's order ticket; it drifts slowly, so re-read it every few weeks. 'room_override_pct' forces a width instead of the measured one; leave null to let the script decide. 'routing' is how a sale executes: 'exchange' (Fee tiers on, itemized taker fee), 'market_maker' (spread in the price) or 'unknown' (treated as exchange). It sets the breakeven floor: once current_stop is at or above breakeven, the script never recommends a stop below it. 'bought' is the Central-time date the lot was bought (one lot per coin per day). 'stop_placed' is the date the live stop order was entered: Robinhood cancels good-til-canceled orders 90 days after they are placed, so whenever a stop is entered or re-entered (even at the same price) this date changes too; stop_check.py warns from day 80. The '_' settings above the positions drive which alerts may buzz: _lot_size_usd is the current ladder step, _buys_allowed is false while open risk is over the limit (_buys_note says why), _max_open_lots and _crypto_cost_cap_usd are the standing caps (claude/trading-strategy.md section 0).",
+  "_note": "Edit this when you buy, sell, or enter new stop orders. 'current_stop' is what you actually have live on Robinhood right now - set it to null if you have no stop on that coin, and the next run will tell you what to enter. 'spread_pct' is the 'Buy spread (x%)' figure from the coin's order ticket; it drifts slowly, so re-read it every few weeks. 'room_override_pct' forces a width instead of the measured one; leave null to let the script decide. 'routing' is how a sale executes: 'exchange' (Fee tiers on, itemized taker fee), 'market_maker' (spread in the price) or 'unknown' (treated as exchange). It sets the breakeven floor: once current_stop is at or above breakeven, the script never recommends a stop below it. 'bought' is the Central-time date the lot was bought (one lot per coin per day). 'stop_placed' is the date the live stop order was entered: Robinhood cancels good-til-canceled orders 90 days after they are placed, so whenever a stop is entered or re-entered (even at the same price) this date changes too; stop_check.py warns from day 80. The '_' settings above the positions drive which alerts may buzz: _lot_size_usd is the current ladder step, _buys_allowed is false while a standing rule blocks new lots (_buys_note says which), _max_open_lots and _crypto_cost_cap_usd are the standing caps (claude/trading-strategy.md section 0).",
   "_updated": "2026-10-16",
   "_lot_size_usd": 500,
   "_buys_allowed": false,
-  "_buys_note": "over the open-risk limit",
+  "_buys_note": "24 lots open, max 10",
   "_max_open_lots": 10,
   "_crypto_cost_cap_usd": 40000,
   "_tax_lot_rule": "Standing order for 2026 sales (IRS Notice 2026-20, recorded 2026-10-16): each crypto sale disposes of the lot(s) its order was placed for, as listed here and in the trade log when the order was placed; if an order covering several lots fills only in part, the highest-cost lot goes first. A sale with no recorded lot follows FIFO.",
@@ -53,12 +53,12 @@
       "qty": 5500,
       "avg_cost": 0.089941,
       "spread_pct": 1.09,
-      "current_stop": 0.075617,
+      "current_stop": 0.0783,
       "room_override_pct": 15,
       "routing": "market_maker",
       "decimals": 6,
       "bought": "2026-10-12",
-      "stop_placed": "2026-10-12"
+      "stop_placed": "2026-10-15"
     },
     {
       "symbol": "RENDER",
@@ -131,12 +131,12 @@
       "qty": 4500,
       "avg_cost": 0.08363177,
       "spread_pct": 1.09,
-      "current_stop": 0.070312,
+      "current_stop": 0.0783,
       "room_override_pct": 15,
       "routing": "market_maker",
       "decimals": 6,
       "bought": "2026-10-12",
-      "stop_placed": "2026-10-12"
+      "stop_placed": "2026-10-15"
     },
     {
       "symbol": "SNX#2",
@@ -170,12 +170,12 @@
       "qty": 20000,
       "avg_cost": 0.088033436,
       "spread_pct": 1.09,
-      "current_stop": 0.074013,
+      "current_stop": 0.0783,
       "room_override_pct": 15,
       "routing": "market_maker",
       "decimals": 6,
       "bought": "2026-10-12",
-      "stop_placed": "2026-10-13"
+      "stop_placed": "2026-10-15"
     },
     {
       "symbol": "XCN#3",
@@ -222,12 +222,12 @@
       "qty": 10000,
       "avg_cost": 0.0838452,
       "spread_pct": 1.09,
-      "current_stop": 0.070492,
+      "current_stop": 0.0783,
       "room_override_pct": 15,
       "routing": "market_maker",
       "decimals": 6,
       "bought": "2026-10-13",
-      "stop_placed": "2026-10-13"
+      "stop_placed": "2026-10-15"
     },
     {
       "symbol": "UNI#2",
@@ -248,12 +248,12 @@
       "qty": 10000,
       "avg_cost": 0.082852379,
       "spread_pct": 1.09,
-      "current_stop": 0.069657,
+      "current_stop": 0.0783,
       "room_override_pct": 15,
       "routing": "market_maker",
       "decimals": 6,
       "bought": "2026-10-13",
-      "stop_placed": "2026-10-13"
+      "stop_placed": "2026-10-15"
     },
     {
       "symbol": "RENDER#3",
@@ -300,7 +300,7 @@
       "qty": 5000,
       "avg_cost": 0.088523646,
       "spread_pct": 1.09,
-      "current_stop": 0.074425,
+      "current_stop": 0.0783,
       "room_override_pct": 15,
       "routing": "market_maker",
       "decimals": 6,
@@ -313,7 +313,7 @@
       "qty": 5000,
       "avg_cost": 0.08644379,
       "spread_pct": 1.09,
-      "current_stop": 0.072676,
+      "current_stop": 0.0783,
       "room_override_pct": 15,
       "routing": "market_maker",
       "decimals": 6,
