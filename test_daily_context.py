@@ -354,14 +354,17 @@ SENT.clear()
 ab.run_breakouts([hype], fired, NOW, False, state, {}, 85500.0)
 check("no repeat the same day", SENT == [])
 
-# Red lines strip the star.
+# A hot week is information since 10-16 (weekly momentum research); red lines
+# still strip the star. A new run, so the star above no longer counts.
 hot = dict(hype, week_pct=27.0)
 SENT.clear()
+state["run_stars"] = []
 state["base_seen"] = {"HYPE": NOW - 15 * 60}
 ab.run_breakouts([hot], {}, NOW, False, state, {}, 85500.0)
-check("hot week -> caution line, no star, quiet", SENT and SENT[0][0].startswith("HYPE - not a buy - ")
-      and "caution: already up 27%" in SENT[0][1] and SENT[0][2].get("tags") == "no_entry_sign"
-      and SENT[0][2].get("quiet") is True, SENT[:1])
+check("hot week -> information line, still the gold star", SENT and SENT[0][0].startswith("HYPE - BUY")
+      and "hot week: up 27% on the week" in SENT[0][1] and SENT[0][2].get("tags") == "star",
+      SENT[:1])
+state["run_stars"] = []
 state["daily"]["BTC"]["prev_close"] = 90000.0    # BTC -5% today
 SENT.clear()
 state["base_seen"] = {"HYPE": NOW - 15 * 60}
