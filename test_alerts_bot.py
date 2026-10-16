@@ -20,6 +20,10 @@ import alerts_bot as ab
 REAL_COINBASE_RELVOL = ab.coinbase_relvol
 ab.coinbase_relvol = lambda *a, **k: None
 
+# A book with room for a buy, so the format checks below see the loud path;
+# the gate itself is tested in "Quieter alerts" near the end.
+OPEN_BOOK = {"positions": [], "_lot_size_usd": 500, "_buys_allowed": True}
+
 FAILURES = []
 
 
@@ -657,8 +661,9 @@ check("stocks get the caution but never the star", not top and len(lines) == 1, 
 
 # The whole thing through send_rate: title, tag, priority.
 sent = []
-real_push = ab.push
+real_push, real_book = ab.push, ab.load_book
 ab.push = lambda title, message, **k: sent.append((title, message, k.get("priority"), k.get("tags")))
+ab.load_book = lambda: OPEN_BOOK
 try:
     st = {"alerts_today": {}, "streak": {}}
     r1 = {"kind": "crypto", "symbol": "GRT", "name": "The Graph", "price": 0.0295, "pct": 6.3,
@@ -670,16 +675,17 @@ try:
     ab.send_rate([("rate:crypto:QNT", r2, 5.9, 69.0, 3.2)], {}, noon, False, state=st)
     ab.send_rate([("rate:crypto:QNT", dict(r2), 5.9, 69.0, 3.2)], {}, noon - 6 * 3600, True, state={"alerts_today": {}, "streak": {}})
 finally:
-    ab.push = real_push
+    ab.push, ab.load_book = real_push, real_book
 t1, b1, p1, g1 = sent[0]
 check("first GRT alert is a starred top setup at high priority", t1.startswith("* GRT") and p1 == "high" and g1 == "star", (t1, p1, g1))
+check("...with the lot size in the title", t1.endswith("- $500 lot"), t1)
 check("...and the body says so and quotes a 15% stop", "TOP SETUP" in b1 and "15% stop" in b1, b1)
 t2, b2, p2, g2 = sent[1]
-check("the repeat an hour later is unstarred and quieter", not t2.startswith("*") and p2 == "default" and "alert #2 today" in b2, (t2, p2, b2))
+check("the repeat an hour later is unstarred and goes to the quiet feed", not t2.startswith("*") and p2 == "low" and "alert #2 today" in b2, (t2, p2, b2))
 t3, b3, p3, g3 = sent[2]
-check("Quant up 130% on the week carries the caution, no star", "caution: already up 130% on the week" in b3 and not t3.startswith("*") and p3 == "high", (t3, p3, b3))
+check("Quant up 130% on the week carries the caution, no star, quiet feed", "caution: already up 130% on the week" in b3 and not t3.startswith("*") and p3 == "low", (t3, p3, b3))
 t4, b4, p4, g4 = sent[3]
-check("overnight still goes out at max priority", p4 == "max", p4)
+check("an overnight mover goes to the quiet feed, not max", p4 == "low", p4)
 
 # The 7d figure has to come through the screener.
 rows7 = with_urlopen([dict(coins[1], price_change_percentage_7d_in_currency=34.5)], lambda: ab.screen_crypto(None))
@@ -795,6 +801,186 @@ try:
           st["screen_fails"] == 1 and len(sent_pushes) == 1, st)
 finally:
     ab.push = _rp
+
+print("\nQuieter alerts (2026-10-16): only a buyable star buzzes")
+NOON_CT = datetime(2026, 10, 16, 17, 0, tzinfo=timezone.utc).timestamp()   # noon CDT
+NINE_PM = datetime(2026, 10, 17, 2, 0, tzinfo=timezone.utc).timestamp()    # 9 PM CDT
+SEVEN_AM = datetime(2026, 10, 17, 12, 5, tzinfo=timezone.utc).timestamp()  # 7:05 AM CDT
+
+
+def lot(sym, qty, cost, stop, bought="2026-10-10", routing="market_maker", product=None):
+    return {"symbol": sym, "product": product or f"{sym.split('#')[0]}-USD", "qty": qty,
+            "avg_cost": cost, "current_stop": stop, "routing": routing, "bought": bought}
+
+
+check("noon is inside the buy window, 9 PM and 6 AM are not",
+      ab.in_buy_window(NOON_CT) and not ab.in_buy_window(NINE_PM)
+      and not ab.in_buy_window(SEVEN_AM - 3600))
+check("open book: a new coin gets the lot size",
+      ab.buy_gate("PYTH", NOON_CT, OPEN_BOOK) == (True, "$500 lot"), ab.buy_gate("PYTH", NOON_CT, OPEN_BOOK))
+check("after 7 PM: no buys", ab.buy_gate("PYTH", NINE_PM, OPEN_BOOK)[0] is False
+      and "outside 7 AM-7 PM" in ab.buy_gate("PYTH", NINE_PM, OPEN_BOOK)[1])
+paused = dict(OPEN_BOOK, _buys_allowed=False, _buys_note="over the open-risk limit")
+check("the switch off: no buys, with its note",
+      ab.buy_gate("PYTH", NOON_CT, paused) == (False, "over the open-risk limit"))
+full = dict(OPEN_BOOK, positions=[lot(f"C{i}", 1, 10.0, 8.0) for i in range(10)])
+check("ten lots open: no buys", ab.buy_gate("PYTH", NOON_CT, full) == (False, "10 lots open, max 10"),
+      ab.buy_gate("PYTH", NOON_CT, full))
+heavy = dict(OPEN_BOOK, positions=[lot("BAT", 100000, 0.396, 0.3)])
+check("at the $40K crypto cap: no buys", ab.buy_gate("PYTH", NOON_CT, heavy)[0] is False
+      and "cap" in ab.buy_gate("PYTH", NOON_CT, heavy)[1], ab.buy_gate("PYTH", NOON_CT, heavy))
+unlocked = dict(OPEN_BOOK, positions=[lot("PYTH", 5500, 0.0899, 0.0756), lot("PYTH#2", 4500, 0.0836, 0.0703)])
+check("held and not locked: no add",
+      ab.buy_gate("PYTH", NOON_CT, unlocked) == (False, "held, first lot not locked: no add"))
+locked = dict(OPEN_BOOK, positions=[lot("BAT", 50000, 0.1279, 0.2027), lot("BAT#4", 50000, 0.1816, 0.2027)])
+check("held and locked: an add at half size",
+      ab.buy_gate("BAT", NOON_CT, locked) == (True, "add: half lot $250"), ab.buy_gate("BAT", NOON_CT, locked))
+today = dict(OPEN_BOOK, positions=[lot("BAT", 50000, 0.1279, 0.2027, bought="2026-10-16")])
+check("bought today: not a second lot", ab.buy_gate("BAT", NOON_CT, today) == (False, "already bought today"))
+real_book = ab.load_book
+ab.load_book = lambda: None
+check("unreadable book: no buys", ab.buy_gate("PYTH", NOON_CT) == (False, "positions file unreadable"))
+ab.load_book = real_book
+
+sent = []
+real_push, real_book = ab.push, ab.load_book
+ab.push = lambda title, message, **k: sent.append((title, message, k))
+try:
+    grt = {"kind": "crypto", "symbol": "GRT", "name": "The Graph", "price": 0.0295, "pct": 6.3,
+           "week_pct": 8.0, "low_24h": 0.0271, "rv_source": "coinbase"}
+    ab.load_book = lambda: unlocked
+    pyth = dict(grt, symbol="PYTH", name="Pyth Network", price=0.0958)
+    ab.send_rate([("rate:crypto:PYTH", pyth, 3.9, 71.0, 6.2)], {}, NOON_CT, False,
+                 state={"alerts_today": {}, "streak": {}})
+    title, body, kw = sent[-1]
+    check("a star on a held, unlocked coin goes quiet, reason in the title",
+          kw.get("quiet") is True and kw.get("priority") == "low" and title.startswith("* PYTH")
+          and title.endswith("[held, first lot not locked: no add]"), (title, kw))
+    ab.load_book = lambda: full
+    sent.clear()
+    ab.send_rate([("rate:crypto:GRT", dict(grt), 3.9, 71.0, 6.2)], {}, NOON_CT, False,
+                 state={"alerts_today": {}, "streak": {}})
+    title, body, kw = sent[-1]
+    check("ten lots open: the star goes quiet with the reason",
+          kw.get("quiet") is True and title.endswith("[10 lots open, max 10]"), (title, kw))
+    ab.load_book = lambda: OPEN_BOOK
+    sent.clear()
+    hot = dict(grt, week_pct=25.0)
+    ab.send_rate([("rate:crypto:GRT", hot, 3.9, 71.0, 6.2)], {}, NOON_CT, False,
+                 state={"alerts_today": {}, "streak": {}})
+    title, body, kw = sent[-1]
+    check("a TOP SETUP with a caution line loses its star (the old gap)",
+          not title.startswith("*") and kw.get("quiet") is True and "TOP SETUP" in body, (title, kw))
+    sent.clear()
+    st = {"alerts_today": {}, "streak": {}}
+    ab.send_rate([("rate:crypto:GRT", dict(grt), 3.9, 71.0, 6.2)], {}, NINE_PM, False, state=st)
+    title, body, kw = sent[-1]
+    check("a star at 9 PM goes quiet and is kept for the morning",
+          kw.get("quiet") is True and [s["symbol"] for s in st.get("night_stars", [])] == ["GRT"],
+          (title, st.get("night_stars")))
+    sent.clear()
+    ab.send_night_digest(st, [dict(grt, price=0.0310)], SEVEN_AM)
+    title, body, kw = sent[-1] if sent else ("", "", {})
+    check("7 AM: one digest, loud because a buy is allowed",
+          len(sent) == 1 and title == "Overnight stars: GRT" and not kw.get("quiet")
+          and "$500 lot" in body and "+5.1%" in body, (title, body, kw))
+    check("...and the list is cleared", st["night_stars"] == [])
+    sent.clear()
+    ab.send_night_digest(st, [], SEVEN_AM + 300)
+    check("no stars, no digest", sent == [])
+    ab.load_book = lambda: full
+    st = {"night_stars": [{"symbol": "GRT", "title": "* GRT", "price": 0.0295, "ts": NINE_PM}]}
+    ab.send_night_digest(st, [], SEVEN_AM)
+    check("7 AM with the book full: the digest goes quiet",
+          sent and sent[-1][2].get("quiet") is True and "10 lots open" in sent[-1][1], sent[-1:])
+    sent.clear()
+    st = {"night_stars": [{"symbol": "GRT", "title": "* GRT", "price": 0.0295, "ts": NINE_PM - 20 * 3600}]}
+    ab.send_night_digest(st, [], SEVEN_AM)
+    check("a star older than 14 hours is dropped, not sent", sent == [] and st["night_stars"] == [])
+    sent.clear()
+    ab.send_alerts([(15.0, "crypto:GRT", dict(grt, pct=16.0, dollars=5e7))], {}, ab.CRYPTO_HIGH_PRIORITY_LEVEL,
+                   False, state=None, now_ts=NOON_CT)
+    check("a threshold crossing is a mover: quiet feed",
+          sent and sent[-1][2].get("quiet") is True and sent[-1][2].get("priority") == "low", sent[-1:])
+finally:
+    ab.push, ab.load_book = real_push, real_book
+
+print("\nStop watch: held coins under a stop's sell limit")
+sent = []
+real_push = ab.push
+ab.push = lambda title, message, **k: sent.append((title, message, k))
+try:
+    book = {"positions": [lot("PYTH", 5500, 0.0899, 0.0756), lot("PYTH#2", 4500, 0.0836, 0.0703),
+                          lot("XCN", 250000, 0.0046, 0.00387), lot("AERO", 1000, 0.934, 0.794),
+                          lot("UNI", 150, 7.14, 6.171)]}
+    prices = {"PYTH-USD": 0.0700, "XCN-USD": 0.00380, "AERO-USD": 0.790, "UNI-USD": 7.40}
+    st = {}
+    ab.check_live_stops(st, NOON_CT, book=book, price_of=lambda p: prices[p])
+    titles = [t for t, _, _ in sent]
+    check("PYTH 7.4% under its 0.0756 stop -> CHECK STOPS at max",
+          "CHECK STOPS: PYTH under its stop limit" in titles
+          and all(k.get("priority") == "max" for _, _, k in sent), titles)
+    pyth = next(m for t, m, _ in sent if t.startswith("CHECK STOPS: PYTH"))
+    check("...naming the lot whose limit is crossed, not the one still above it",
+          "PYTH: stop $0.0756" in pyth and "PYTH#2" not in pyth, pyth)
+    check("three coins at or under their stops -> one CRASH CHECK",
+          sum(t.startswith("CRASH CHECK: 3 coins") for t in titles) == 1, titles)
+    check("XCN and AERO under the stop but inside the 5% limit -> no CHECK STOPS",
+          not any(t.startswith("CHECK STOPS: XCN") or t.startswith("CHECK STOPS: AERO") for t in titles), titles)
+    sent.clear()
+    ab.check_live_stops(st, NOON_CT + 3600, book=book, price_of=lambda p: prices[p])
+    check("an hour later: no repeat", sent == [], sent)
+    ab.check_live_stops(st, NOON_CT + 7 * 3600, book=book, price_of=lambda p: prices[p])
+    check("seven hours later: it says so again", any(t.startswith("CHECK STOPS: PYTH") for t, _, _ in sent))
+    sent.clear()
+    def down(p):
+        raise OSError("coinbase down")
+    ab.check_live_stops({}, NOON_CT, book=book, price_of=down)
+    check("no prices: nothing sent, no crash", sent == [])
+finally:
+    ab.push = real_push
+
+print("\nPushes: two tries, failures counted, quiet topic")
+import urllib.request as _ur
+import time as _time
+calls = []
+
+
+class _Resp:
+    def __init__(self, status):
+        self.status = status
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+real_open, real_sleep = _ur.urlopen, _time.sleep
+real_topic, real_quiet = ab.NTFY_TOPIC, ab.NTFY_TOPIC_QUIET
+try:
+    ab.NTFY_TOPIC, ab.NTFY_TOPIC_QUIET = "main-topic", "main-topic-quiet"
+    _time.sleep = lambda s: None
+    _ur.urlopen = lambda req, timeout=None: (calls.append((req.full_url, req.headers)), _Resp(200))[1]
+    check("a quiet push goes to the quiet topic at low priority",
+          ab.push("t", "m", priority="high", quiet=True) is True
+          and calls[-1][0].endswith("/main-topic-quiet") and calls[-1][1].get("Priority") == "low", calls[-1:])
+    check("a loud push goes to the main topic", ab.push("t", "m") is True and calls[-1][0].endswith("/main-topic"))
+    before = ab.PUSH_STATS["failed"]
+    calls.clear()
+
+    def boom(req, timeout=None):
+        calls.append(req.full_url)
+        raise OSError("down")
+
+    _ur.urlopen = boom
+    check("both tries fail -> False", ab.push("t", "m") is False and len(calls) == 2, calls)
+    check("...and the failure is counted for the exit code", ab.PUSH_STATS["failed"] == before + 1)
+    ab.PUSH_STATS["failed"] = before
+finally:
+    _ur.urlopen, _time.sleep = real_open, real_sleep
+    ab.NTFY_TOPIC, ab.NTFY_TOPIC_QUIET = real_topic, real_quiet
 
 print()
 if FAILURES:
