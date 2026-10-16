@@ -651,7 +651,8 @@ check("4.9x volume is not a top setup", not top, lines)
 top, lines = ab.tier_lines(crow(rv_source="coingecko"), 9.0, True)
 check("the star needs Coinbase-confirmed volume", not top, lines)
 top, lines = ab.tier_lines(crow(week_pct=57.0), 6.0, True)
-check("a hot week gets the caution even on a top setup", top and any(l.startswith("caution") for l in lines), lines)
+check("a hot week gets the information line even on a top setup",
+      top and any(l.startswith("hot week: up 57% on the week") for l in lines), lines)
 top, lines = ab.tier_lines(crow(week_pct=19.9), 2.6, False)
 check("just under the week bar: no caution", lines == [], lines)
 top, lines = ab.tier_lines(crow(week_pct=None), 2.6, False)
@@ -685,7 +686,7 @@ check("...and the body names it, says it is not a buy signal, and quotes a 15% s
 t2, b2, p2, g2 = sent[1]
 check("the repeat an hour later is unstarred and goes to the quiet feed", not t2.startswith("*") and p2 == "low" and "alert #2 today" in b2, (t2, p2, b2))
 t3, b3, p3, g3 = sent[2]
-check("Quant up 130% on the week carries the caution, no star, quiet feed", "caution: already up 130% on the week" in b3 and not t3.startswith("*") and p3 == "low", (t3, p3, b3))
+check("Quant up 130% on the week carries the hot-week line, no star, quiet feed", "hot week: up 130% on the week" in b3 and not t3.startswith("*") and p3 == "low", (t3, p3, b3))
 t4, b4, p4, g4 = sent[3]
 check("an overnight mover goes to the quiet feed, not max", p4 == "low", p4)
 
@@ -864,9 +865,50 @@ check("...and the same coin cannot be starred twice in a run",
       ab.buy_gate("GRT", NOON_CT, OPEN_BOOK, pending=[{"symbol": "GRT", "usd": 500.0}])
       == (False, "already starred this run"))
 check("first_red cuts a red line to its headline",
-      ab.first_red(["1st alert today", "caution: already up 27% on the week - alerts like this "
-                    "averaged a loss"]) == "caution: already up 27% on the week"
+      ab.first_red(["1st alert today", "LATE: already up 31% today - coins past +30% hit -15% "
+                    "before +20% about 2 times in 3"]) == "LATE: already up 31% today"
       and ab.first_red(["small coin ($35M cap): runs more often"]) is None)
+check("a hot week is information, not a red line (2026-10-16, weekly momentum research)",
+      ab.first_red(["hot week: up 27% on the week (not a veto since 10-16: weekly momentum "
+                    "research)"]) is None)
+# The crash budget (2026-10-16): the loss if every coin fell as far below its
+# stop as on Oct 10, 2025, new lot included.
+CG = {"PYTH": 0.54, "_default": 0.21}
+check("crash case of one lot: cost minus the stop value after that coin's gap",
+      abs(ab.crash_case([lot("PYTH", 1000, 1.0, 0.85)], CG) - (1000 - 850 * 0.46)) < 1e-9,
+      ab.crash_case([lot("PYTH", 1000, 1.0, 0.85)], CG))
+check("a new lot's crash loss: its 15% stop, then the default gap",
+      abs(ab.crash_loss_new(500, "GRT", CG) - 500 * (1 - 0.85 * 0.79)) < 1e-9)
+check("a coin's own gap beats the default, and a lot with no stop is taken at 15% under cost",
+      ab.crash_gap(CG, "PYTH#4") == 0.54 and ab.crash_gap(CG, "GRT") == 0.21
+      and ab.crash_gap({}, "GRT") == ab.DEFAULT_CRASH_GAP
+      and abs(ab.crash_case([lot("GRT", 100, 1.0, None)], CG) - (100 - 85 * 0.79)) < 1e-9)
+real_gaps = ab.load_crash_gaps
+ab.load_crash_gaps = lambda: dict(CG)
+one = dict(OPEN_BOOK, positions=[lot("PYTH", 1000, 1.0, 0.85)])        # crash case $609
+check("inside the crash budget: a buy",
+      ab.buy_gate("GRT", NOON_CT, dict(one, _crash_budget_usd=800)) == (True, "$500 lot"))
+check("past it: no buy, with the numbers",
+      ab.buy_gate("GRT", NOON_CT, dict(one, _crash_budget_usd=700))
+      == (False, "over the crash budget ($773 vs $700)"),
+      ab.buy_gate("GRT", NOON_CT, dict(one, _crash_budget_usd=700)))
+check("a star earlier in the run counts against the crash budget too",
+      ab.buy_gate("GRT", NOON_CT, dict(one, _crash_budget_usd=800),
+                  pending=[{"symbol": "ZRX", "usd": 500.0}])[0] is False)
+check("a half-size lot needs half the room",
+      ab.buy_gate("GRT", NOON_CT, dict(one, _crash_budget_usd=700), half="high-vol coin")
+      == (True, "$250 lot (half size: high-vol coin)"))
+check("no budget set: no crash check",
+      ab.buy_gate("GRT", NOON_CT, one) == (True, "$500 lot"))
+bad = ab.buy_gate("GRT", NOON_CT, dict(one, _crash_budget_usd="lots"))
+check("an unreadable crash budget fails closed: no buy, and it says why",
+      bad[0] is False and bad[1].startswith("crash budget check failed"), bad)
+ab.load_crash_gaps = real_gaps
+real_file = ab.CRASH_GAPS_FILE
+ab.CRASH_GAPS_FILE = ab.Path("/nonexistent/crash_gaps.json")
+check("an unreadable gaps file means the default for every coin, not a crash",
+      ab.load_crash_gaps() == {} and ab.crash_gap(ab.load_crash_gaps(), "PYTH") == ab.DEFAULT_CRASH_GAP)
+ab.CRASH_GAPS_FILE = real_file
 check("the no-catch-up line is on the red list too",
       ab.first_red(["no catch-up trade: BTC +6% over 3 days and this coin +0.3% - laggards "
                     "averaged -2.1%"]) == "no catch-up trade: BTC +6% over 3 days and this coin +0.3%")
@@ -916,9 +958,16 @@ try:
     ab.send_rate([("rate:crypto:GRT", hot, 3.9, 71.0, 6.2)], {}, NOON_CT, False,
                  state={"alerts_today": {}, "streak": {}})
     title, body, kw = sent[-1]
-    check("a TOP SETUP with a caution line gets no star (the old gap)",
-          kw.get("tags") == "no_entry_sign" and kw.get("quiet") is True and "TOP SETUP" in body
-          and title.endswith("(caution: already up 25% on the week)"), (title, kw))
+    check("a hot week no longer takes the star (old TOP SETUP routing switched on)",
+          kw.get("tags") == "star" and kw.get("quiet") is False
+          and "hot week: up 25% on the week" in body and title.startswith("GRT - BUY"), (title, kw))
+    late = dict(grt, pct=31.0)
+    sent.clear()
+    ab.send_rate([("rate:crypto:GRT", late, 3.9, 71.0, 6.2)], {}, NOON_CT, False,
+                 state={"alerts_today": {}, "streak": {}})
+    title, body, kw = sent[-1]
+    check("a LATE line still takes it",
+          kw.get("tags") != "star" and kw.get("quiet") is True, (title, kw))
     sent.clear()
     st = {"alerts_today": {}, "streak": {}}
     ab.send_rate([("rate:crypto:GRT", dict(grt), 3.9, 71.0, 6.2)], {}, NINE_PM, False, state=st)
@@ -994,6 +1043,28 @@ try:
           kw.get("tags") == "star"
           and title == "GRT - BUY $250 lot (half size: high-vol coin) - base breakout +5.4% today"
           and st.get("run_stars") == [{"symbol": "GRT", "usd": 250.0}], (title, st.get("run_stars")))
+    ab.load_book = lambda: OPEN_BOOK
+    sent.clear()
+    st = gstate()
+    ab.send_breakouts([("base:crypto:GRT", dict(grt, week_pct=27.0), base_ctx)], {}, TUE_NOON,
+                      False, state=st)
+    title, body, kw = sent[-1]
+    check("a hot-week BASE BREAKOUT gets the gold star (not a veto since 10-16)",
+          kw.get("tags") == "star" and title == "GRT - BUY $500 lot - base breakout +5.4% today"
+          and "hot week: up 27% on the week" in body, (title, kw))
+    real_gaps = ab.load_crash_gaps
+    ab.load_crash_gaps = lambda: {"PYTH": 0.54, "_default": 0.21}
+    ab.load_book = lambda: dict(OPEN_BOOK, _crash_budget_usd=700,
+                                positions=[lot("PYTH", 1000, 1.0, 0.85)])
+    sent.clear()
+    ab.send_breakouts([("base:crypto:GRT", dict(grt), base_ctx)], {}, TUE_NOON, False,
+                      state=gstate())
+    title, body, kw = sent[-1]
+    check("a breakout past the crash budget: no star, quiet, the numbers in the title",
+          kw.get("tags") == "no_entry_sign" and kw.get("quiet") is True
+          and title.endswith("(over the crash budget ($773 vs $700))")
+          and body.startswith("NOT A BUY: over the crash budget"), (title, kw))
+    ab.load_crash_gaps = real_gaps
     ab.load_book = lambda: OPEN_BOOK
     sent.clear()
     st = gstate()
