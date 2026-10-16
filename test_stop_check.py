@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Offline tests for stop_check.py. No network, no pytest: python3 test_stop_check.py"""
 
+import json
 import os
 import sys
+from datetime import datetime
 
 os.environ.setdefault("POSITIONS_FILE", "positions.json")
 import stop_check as sc
@@ -413,6 +415,121 @@ def test_config_is_loadable():
         check(f"{p['symbol']} routing is a known value",
               p.get("routing") in ("exchange", "market_maker", "unknown"),
               p.get("routing"))
+        for field in ("bought", "stop_placed"):
+            if p.get(field) is not None:
+                ok = True
+                try:
+                    datetime.strptime(str(p[field]), "%Y-%m-%d")
+                except ValueError:
+                    ok = False
+                check(f"{p['symbol']} {field} is a YYYY-MM-DD date", ok, p[field])
+
+
+def test_order_age():
+    """Robinhood cancels a GTC order after 90 days; warn from day 80."""
+    from datetime import date
+    today = date(2026, 12, 31)
+    pos = {"symbol": "XCN", "current_stop": 0.0038679, "stop_placed": "2026-10-10"}
+    check("age counts whole days", sc.stop_age_days(pos, today) == 82,
+          sc.stop_age_days(pos, today))
+    why = sc.expiry_reason(pos, today)
+    check("day 82 asks for a re-entry", why is not None and "82 days old" in why
+          and "Jan 08" in why, why)
+    young = dict(pos, stop_placed="2026-10-12")
+    check("day 80 is the first warning", sc.expiry_reason(young, today) is not None)
+    younger = dict(pos, stop_placed="2026-10-13")
+    check("day 79 is quiet", sc.expiry_reason(younger, today) is None)
+    check("no placed date: no warning", sc.expiry_reason({"current_stop": 1.0}, today) is None)
+    check("no stop: no warning",
+          sc.expiry_reason({"current_stop": None, "stop_placed": "2026-01-01"}, today) is None)
+    check("a bad date is ignored, not a crash",
+          sc.expiry_reason(dict(pos, stop_placed="Oct 10"), today) is None)
+    now = 1_000_000.0
+    check("the warning is held for a day after it goes out",
+          sc.expiry_suppressed("XCN", {"expiry:XCN": {"ts": now - 3600}}, now) is True
+          and sc.expiry_suppressed("XCN", {"expiry:XCN": {"ts": now - 25 * 3600}}, now) is False
+          and sc.expiry_suppressed("XCN", {}, now) is False)
+
+
+def test_push_reports_failure():
+    """Two tries, and the caller learns whether the push went."""
+    import urllib.request
+    calls = []
+    real_open, real_sleep, real_topic = urllib.request.urlopen, sc.time.sleep, sc.NTFY_TOPIC
+
+    class Resp:
+        def __init__(self, status):
+            self.status = status
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+
+    def always_down(req, timeout=None):
+        calls.append(req.full_url)
+        raise OSError("ntfy unreachable")
+
+    def second_try_works(req, timeout=None):
+        calls.append(req.full_url)
+        if len(calls) == 1:
+            raise OSError("blip")
+        return Resp(200)
+
+    try:
+        sc.NTFY_TOPIC = "test-topic"
+        sc.time.sleep = lambda s: None
+        urllib.request.urlopen = always_down
+        ok = sc.push("t", "m")
+        check("both tries fail -> False", ok is False, ok)
+        check("...after exactly two tries", len(calls) == 2, len(calls))
+        calls.clear()
+        urllib.request.urlopen = second_try_works
+        check("a blip then success -> True", sc.push("t", "m") is True)
+        calls.clear()
+        urllib.request.urlopen = lambda req, timeout=None: Resp(500)
+        check("a 500 twice -> False", sc.push("t", "m") is False)
+    finally:
+        urllib.request.urlopen, sc.time.sleep, sc.NTFY_TOPIC = real_open, real_sleep, real_topic
+    check("no topic still prints and counts as handled", sc.push("t", "m") is True)
+
+
+def test_main_is_loud_about_failures():
+    """Unpriced lots and failed pushes end the run with an error."""
+    import tempfile
+    from pathlib import Path
+    tmp = Path(tempfile.mkdtemp())
+    cfg = {"positions": [{"symbol": "LTC", "product": "LTC-USD", "qty": 10,
+                          "avg_cost": 100.0, "spread_pct": 1.0, "current_stop": 99.5,
+                          "room_override_pct": 15, "routing": "market_maker",
+                          "decimals": 2, "stop_placed": "2026-10-15"}]}
+    (tmp / "positions.json").write_text(json.dumps(cfg))
+    saved = (sc.CONFIG_FILE, sc.STATE_FILE, sc.fetch_price, sc.fetch_candles, sc.push)
+    sent = []
+    try:
+        sc.CONFIG_FILE, sc.STATE_FILE = tmp / "positions.json", tmp / "state.json"
+        sc.fetch_candles = lambda product, chunks=None: []
+        sc.fetch_price = lambda product: None
+        sc.push = lambda title, message, **k: (sent.append(title), True)[1]
+        rc = sc.main()
+        check("no price for any lot -> exit 1", rc == 1, rc)
+        check("...and one push says so", sent == ["Stop check could not price any coin"], sent)
+
+        sent.clear()
+        sc.fetch_price = lambda product: 100.0        # the 99.5 stop is about to fire
+        sc.push = lambda title, message, **k: (sent.append(title), False)[1]
+        rc = sc.main()
+        state = json.loads((tmp / "state.json").read_text())
+        check("a failed push -> exit 1", rc == 1, rc)
+        check("...and the advice is NOT marked as sent", "LTC" not in state, state)
+
+        sent.clear()
+        sc.push = lambda title, message, **k: (sent.append(title), True)[1]
+        rc = sc.main()
+        state = json.loads((tmp / "state.json").read_text())
+        check("a delivered push -> exit 0", rc == 0, rc)
+        check("...and only then is it marked", "LTC" in state, state)
+    finally:
+        sc.CONFIG_FILE, sc.STATE_FILE, sc.fetch_price, sc.fetch_candles, sc.push = saved
 
 
 def test_no_trading_surface():
