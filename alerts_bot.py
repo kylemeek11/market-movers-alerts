@@ -1521,6 +1521,9 @@ def buy_head(note, usd):
     if usd:
         head += (f". If that stop fills: about -${stop_loss_usd(usd):,.0f} "
                  f"of the ${float(usd):,.0f}")
+    # Robinhood's own price alert at the stop is the independent fill tell
+    # (2026-10-18; strategy section 5, "Robinhood's own alerts").
+    head += ". Then a Robinhood price alert at that stop."
     return head
 
 
