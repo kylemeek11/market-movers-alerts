@@ -626,6 +626,18 @@ def in_buy_window(now_ts):
 # claude/backdoor-review-2026-10-15.md section 3 and the round-2 research.
 CRASH_GAPS_FILE = Path(os.environ.get("CRASH_GAPS_FILE", "crash_gaps.json"))
 DEFAULT_CRASH_GAP = 0.21
+# The memecoin pack counts as one coin (2026-10-18; Kyle: "If you think it'll
+# help us make money then yes"). Sub-penny memecoins move together (0.63 daily
+# correlation with each other against 0.49 with the rest: strategy section 3),
+# so a second memecoin is an add to the first, not a new position, and under
+# the add rule it never gets the star. Edit the list as Robinhood's lineup
+# changes; a coin not listed is treated as its own coin.
+MEME_PACK = {
+    "DOGE", "SHIB", "PEPE", "BONK", "FLOKI", "WIF", "PENGU", "MEW", "TRUMP", "MELANIA",
+    "FARTCOIN", "PNUT", "MOODENG", "POPCAT", "BRETT", "TURBO", "CASHCAT", "PONKE",
+    "GOAT", "NEIRO", "BOME", "DOG", "MOG", "SPX", "GIGA", "TOSHI", "WOJAK", "BABYDOGE",
+    "MYRO", "SLERF", "PUMP",
+}
 NEW_LOT_STOP_ROOM = 0.15                 # a new lot's stop sits 15% under the fill
 
 BUY_TAG = "star"                         # gold star: buy now
@@ -643,6 +655,7 @@ def buy_decision(symbol, now_ts, book=None, pending=None, half=None):
     "_crash_budget_usd" is set (see CRASH_GAPS_FILE), and no alert buy of a
     coin already held: under the add rule an add comes only from a calm stop
     check (the coin up under 5% on the day), which a breakout day never is.
+    The memecoin pack (MEME_PACK) counts as one coin for that rule.
     `half` names a yellow flag that halves the lot (a high-vol coin).
     `pending` lists the buys already starred earlier in the same run
     ({"symbol", "usd"}); they count as bought, so two stars in one run cannot
@@ -677,6 +690,14 @@ def buy_decision(symbol, now_ts, book=None, pending=None, half=None):
     if any(base_symbol(p.get("symbol")) == sym for p in extra):
         return False, "already starred this run", 0.0
     held = [p for p in lots if base_symbol(p.get("symbol")) == sym]
+    if not held and sym in MEME_PACK:
+        pack = sorted({base_symbol(p.get("symbol")) for p in lots
+                       if base_symbol(p.get("symbol")) in MEME_PACK})
+        if pack:
+            return (False, f"memecoin pack already held ({', '.join(pack)}): "
+                           f"counts as one coin", 0.0)
+        if any(base_symbol(p.get("symbol")) in MEME_PACK for p in extra):
+            return False, "memecoin pack already starred this run", 0.0
     if held:
         local = local_at(now_ts)
         today = (local or datetime.fromtimestamp(now_ts, timezone.utc)).date().isoformat()
