@@ -1,12 +1,12 @@
 {
   "_note": "Edit this when you buy, sell, or enter new stop orders. 'current_stop' is what you actually have live on Robinhood right now - set it to null if you have no stop on that coin, and the next run will tell you what to enter. 'spread_pct' is the 'Buy spread (x%)' figure from the coin's order ticket; it drifts slowly, so re-read it every few weeks. 'room_override_pct' forces a width instead of the measured one; leave null to let the script decide. 'routing' is how a sale executes: 'exchange' (Fee tiers on, itemized taker fee), 'market_maker' (spread in the price) or 'unknown' (treated as exchange). It sets the breakeven floor: once current_stop is at or above breakeven, the script never recommends a stop below it. 'bought' is the Central-time date the lot was bought (one lot per coin per day). 'stop_placed' is the date the live stop order was entered: Robinhood cancels good-til-canceled orders 90 days after they are placed, so whenever a stop is entered or re-entered (even at the same price) this date changes too; stop_check.py warns from day 80. The '_' settings above the positions drive which alerts may buzz: _lot_size_usd is the current ladder step, _buys_allowed is false while a standing rule blocks new lots (_buys_note says which), _max_open_lots and _crypto_cost_cap_usd are the standing caps, and _crash_budget_usd caps the crash case: the loss against cost if every coin fell as far below its stop as on Oct 10, 2025, a new lot included ($11,500 + realized P&L since 10-05, kept current by Claude; each coin's gap is in crash_gaps.json) (claude/trading-strategy.md section 0).",
-  "_updated": "2026-10-17",
+  "_updated": "2026-10-18",
   "_lot_size_usd": 500,
   "_buys_allowed": true,
   "_buys_note": "",
   "_max_open_lots": 30,
   "_crypto_cost_cap_usd": 40000,
-  "_crash_budget_usd": 9303,
+  "_crash_budget_usd": 8764,
   "_tax_lot_rule": "Standing order for 2026 sales (IRS Notice 2026-20, recorded 2026-10-16): each crypto sale disposes of the lot(s) its order was placed for, as listed here and in the trade log when the order was placed; if an order covering several lots fills only in part, the highest-cost lot goes first. A sale with no recorded lot follows FIFO.",
   "positions": [
     {
@@ -21,32 +21,6 @@
       "decimals": 7,
       "bought": "2026-10-10",
       "stop_placed": "2026-10-10"
-    },
-    {
-      "symbol": "AERO",
-      "product": "AERO-USD",
-      "qty": 1000,
-      "avg_cost": 0.93374,
-      "spread_pct": 1.06,
-      "current_stop": 0.79367,
-      "room_override_pct": 15,
-      "routing": "market_maker",
-      "decimals": 5,
-      "bought": "2026-10-10",
-      "stop_placed": "2026-10-10"
-    },
-    {
-      "symbol": "RENDER",
-      "product": "RENDER-USD",
-      "qty": 250,
-      "avg_cost": 2.10636,
-      "spread_pct": 1.03,
-      "current_stop": 1.77,
-      "room_override_pct": 15,
-      "routing": "market_maker",
-      "decimals": 4,
-      "bought": "2026-10-12",
-      "stop_placed": "2026-10-12"
     },
     {
       "symbol": "LINK#3",
@@ -97,19 +71,6 @@
       "room_override_pct": 15,
       "routing": "market_maker",
       "decimals": 7,
-      "bought": "2026-10-12",
-      "stop_placed": "2026-10-12"
-    },
-    {
-      "symbol": "SNX#2",
-      "product": "SNX-USD",
-      "qty": 3000,
-      "avg_cost": 0.24668123,
-      "spread_pct": 1.18,
-      "current_stop": 0.2072,
-      "room_override_pct": 15,
-      "routing": "market_maker",
-      "decimals": 5,
       "bought": "2026-10-12",
       "stop_placed": "2026-10-12"
     },
@@ -175,19 +136,6 @@
       "room_override_pct": 15,
       "routing": "market_maker",
       "decimals": 4,
-      "bought": "2026-10-13",
-      "stop_placed": "2026-10-14"
-    },
-    {
-      "symbol": "SNX#3",
-      "product": "SNX-USD",
-      "qty": 5000,
-      "avg_cost": 0.24363198,
-      "spread_pct": 1.18,
-      "current_stop": 0.20464,
-      "room_override_pct": 15,
-      "routing": "market_maker",
-      "decimals": 5,
       "bought": "2026-10-13",
       "stop_placed": "2026-10-14"
     },
