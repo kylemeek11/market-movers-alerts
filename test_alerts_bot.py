@@ -1231,6 +1231,15 @@ finally:
     _ur.urlopen, _time.sleep = real_open, real_sleep
     ab.NTFY_TOPIC, ab.NTFY_TOPIC_QUIET = real_topic, real_quiet
 
+# What a gold-star lot loses if its stop fills (2026-10-17).
+check("a $500 lot loses about $87 if its stop fills", abs(ab.stop_loss_usd(500) - 87.09) < 0.05,
+      ab.stop_loss_usd(500))
+check("...a $250 half lot about $44", round(ab.stop_loss_usd(250)) == 44, ab.stop_loss_usd(250))
+check("the buy line says what the stop costs",
+      ab.buy_head("$500 lot", 500.0) == "BUY NOW: $500 lot, then the 15% stop below as soon as it fills."
+      " If that stop fills: about -$87 of the $500", ab.buy_head("$500 lot", 500.0))
+check("no size, no loss line", ab.buy_head("x", 0) == "BUY NOW: x, then the 15% stop below as soon as it fills")
+
 print()
 if FAILURES:
     print(f"{len(FAILURES)} FAILED: {FAILURES}")
