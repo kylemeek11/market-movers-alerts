@@ -141,6 +141,18 @@ SLIPPAGE_PCT = 0.2
 # understates.
 FILL_SLIPPAGE_PCT = 1.0
 
+# 30-day maximum hold (2026-10-18; Kyle: "If you think it'll help us make
+# money then yes"). The replay behind the scheme's +3.9% a trade closed every
+# position after 30 days (claude/money-maker-replay-2026-10-14.md); the live
+# rules had no limit, and refereed crypto momentum fades by 2-4 weeks and
+# reverses after about a month (Dobrynskaya 2023; Tzouvanas et al. 2020; Liu,
+# Tsyvinski & Wu 2022). From day MAX_HOLD_DAYS after the lot's "bought" date,
+# every stop check inside HOLD_SELL_HOURS (Central) says to sell that lot at
+# market; the reminder repeats each check until the lot leaves positions.json.
+MAX_HOLD_DAYS = 30
+HOLD_SELL_HOURS = range(7, 19)          # 7 AM - 6:59 PM Central, like the buys
+HOLD_SUPPRESS_HOURS = 3                 # one reminder per 4-hourly check
+
 # Order age. Robinhood: "a GTC order will expire after 90 calendar days."
 GTC_EXPIRY_DAYS = 90
 EXPIRY_WARN_DAYS = 80
@@ -528,6 +540,50 @@ def expiry_reason(pos, today=None):
             f"to reset the clock")
 
 
+def hold_age_days(pos, today=None):
+    """Whole days since the lot was bought, or None if the date is missing."""
+    bought = pos.get("bought")
+    if not bought:
+        return None
+    try:
+        bought_day = datetime.strptime(str(bought), "%Y-%m-%d").date()
+    except ValueError:
+        return None
+    if today is None:
+        now = local_now()
+        today = (now or datetime.now(timezone.utc)).date()
+    return (today - bought_day).days
+
+
+def hold_limit_reason(pos, today=None, hour=None):
+    """The 30-day sale instruction for one lot, or None while it is younger
+    than MAX_HOLD_DAYS or the clock is outside HOLD_SELL_HOURS."""
+    age = hold_age_days(pos, today)
+    if age is None or age < MAX_HOLD_DAYS:
+        return None
+    if hour is None:
+        now = local_now()
+        hour = (now or datetime.now(timezone.utc)).hour
+    if hour not in HOLD_SELL_HOURS:
+        return None
+    return (f"DAY {age}: the scheme's {MAX_HOLD_DAYS}-day limit (bought "
+            f"{pos.get('bought')}) - sell this lot at market now, then cancel "
+            f"its stop and tell Claude the fill")
+
+
+def hold_suppressed(symbol, state, now_ts):
+    """The 30-day sale reminder goes out once per stop check."""
+    prev = state.get(f"hold:{symbol}")
+    if not prev:
+        return False
+    age_h = (now_ts - float(prev.get("ts", 0))) / 3600.0
+    return age_h < HOLD_SUPPRESS_HOURS
+
+
+def is_hold_sale(why):
+    return str(why or "").startswith("DAY ")
+
+
 def expiry_suppressed(symbol, state, now_ts):
     """The order-age warning goes out at most once a day per lot."""
     prev = state.get(f"expiry:{symbol}")
@@ -589,6 +645,11 @@ def describe(ev, why):
         gap = (ev["price"] / ev["stop"] - 1) * 100.0
         lines.append(f"  price is {abs(gap):.1f}% {'above' if gap >= 0 else 'under'} "
                      f"the stop")
+    if is_hold_sale(why) and ev.get("cost") is not None:
+        qty = ev["value"] / ev["price"] if ev["price"] else 0.0
+        proceeds = qty * ev["price"] * (1 - FILL_SLIPPAGE_PCT / 100.0)
+        lines.append(f"  if sold now: {signed_usd(proceeds - ev['cost'])} against the "
+                     f"${ev['cost']:,.0f} you paid (sell {qty:,.10g} at market)")
     if ev.get("ratcheted"):
         lines.append(f"  HELD at your live stop - the measured room would put "
                      f"it at ${fmt(ev['measured_stop'], d)}, but stops only "
@@ -621,6 +682,11 @@ def alert_title(to_alert, evaluated=None):
     """With the run's evaluated lots, an about-to-fire title carries what each
     coin loses against cost if its stop fills (every lot of the coin)."""
     symbols = ", ".join(ev["symbol"] for ev, _ in to_alert)
+    sells = [ev["symbol"] for ev, why in to_alert if is_hold_sale(why)]
+    if sells:
+        rest = [ev["symbol"] for ev, why in to_alert if not is_hold_sale(why)]
+        title = f"Sell today ({MAX_HOLD_DAYS}-day limit): {', '.join(sells)}"
+        return title + (f"; stops to check: {', '.join(rest)}" if rest else "")
     if any(needs_action(why) for _, why in to_alert):
         return f"Stops to update: {symbols}"
     coins = list(dict.fromkeys(base_symbol(ev["symbol"]) for ev, _ in to_alert))
@@ -650,7 +716,7 @@ def main():
     log(f"checking {len(positions)} positions "
         f"({'overnight' if overnight else 'daytime'} thresholds)")
 
-    evaluated, to_alert, skipped, expiring = [], [], [], set()
+    evaluated, to_alert, skipped, expiring, selling = [], [], [], set(), set()
     for pos in positions:
         product = pos["product"]
         price = fetch_price(product)
@@ -670,6 +736,10 @@ def main():
             log(f"  {ev['symbol']}: only {ev['nights']} clean nights, "
                 f"using floor width")
         why = alert_reason(ev, overnight)
+        hold_why = hold_limit_reason(pos)
+        if hold_why and (force or not hold_suppressed(ev["symbol"], state, now_ts)):
+            why = hold_why + (f" | also: {why}" if why else "")
+            selling.add(ev["symbol"])
         if not why:
             age_why = expiry_reason(pos)
             if age_why and (force or not expiry_suppressed(ev["symbol"], state, now_ts)):
@@ -683,7 +753,7 @@ def main():
             f"{' HELD' if ev['ratcheted'] else ' FLOORED' if ev['floored'] else ''}"
             f"{' locked' if ev['locked'] and not ev['floored'] else ''}"
             f"{' | ' + why if why else ''}")
-        if why and (force or ev["symbol"] in expiring
+        if why and (force or ev["symbol"] in expiring or ev["symbol"] in selling
                     or not suppressed(ev, state, now_ts)):
             to_alert.append((ev, why))
         elif why:
@@ -708,7 +778,12 @@ def main():
         body += (f"\n\nBook ${total_value:,.0f} now, ${total_cost:,.0f} paid. "
                  f"If every stop fills: {signed_usd(-total_loss)} against what "
                  f"you paid.")
-        if any(needs_action(why) for _, why in to_alert):
+        if selling:
+            body += (f"\n\nThe {MAX_HOLD_DAYS}-day limit: sell the named lot's quantity at "
+                     f"market (market-maker routing), then cancel that lot's stop. The "
+                     f"reminder repeats every check until the lot is removed from "
+                     f"positions.json.")
+        if any(needs_action(why) and not is_hold_sale(why) for _, why in to_alert):
             body += "\nCancel the old stop before entering the new one."
         body += ("\nPrices are Coinbase's; Robinhood's quote can sit "
                  "~0.5% either side, so re-check on the ticket.")
@@ -718,12 +793,14 @@ def main():
             title=alert_title(to_alert, evaluated),
             message=body,
             priority="max" if overnight else "high",
-            tags="lock",
+            tags="moneybag" if selling else "lock",
             click="https://robinhood.com/crypto/" + to_alert[0][0]["symbol"].split("#")[0],
         )
         if sent:
             for ev, _ in to_alert:
-                if ev["symbol"] in expiring:
+                if ev["symbol"] in selling:
+                    state[f"hold:{ev['symbol']}"] = {"ts": now_ts}
+                elif ev["symbol"] in expiring:
                     state[f"expiry:{ev['symbol']}"] = {"ts": now_ts}
                 else:
                     state[ev["symbol"]] = {"stop": ev["stop"], "ts": now_ts}
