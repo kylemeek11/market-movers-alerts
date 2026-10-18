@@ -1801,6 +1801,77 @@ def too_broad(pending, rows):
     return len(pending) > max(3, int(RATE_BREADTH_MAX * len(rows)))
 
 
+# --- Market-wide runs ---------------------------------------------------------
+# The per-name screen is built for standouts, so a whole-market day (SPY up 4%
+# in Oct 2026) never tripped it. These watch the two broad index funds direct
+# and ping as each level is crossed, once per symbol per level per day.
+INDEX_SYMBOLS = ("SPY", "QQQ")
+INDEX_LEVELS = (1.0, 2.0)       # % above yesterday's close
+INDEX_URGENT_LEVEL = 2.0        # this one breaks through Do Not Disturb
+
+
+def index_moves(yf):
+    """{symbol: % change from the prior close} for the index funds."""
+    out = {}
+    for sym in INDEX_SYMBOLS:
+        try:
+            fi = yf.Ticker(sym).fast_info
+            last, prev = fi.last_price, fi.previous_close
+            if last and prev:
+                out[sym] = (last / prev - 1.0) * 100.0
+        except Exception as exc:
+            log(f"  index quote failed for {sym} ({exc})")
+    return out
+
+
+def send_index_alerts(moves, state):
+    """Push each newly crossed index level. Returns the number sent."""
+    fired = state.setdefault("index_fired", [])
+    sent = 0
+    for sym, pct in sorted(moves.items(), key=lambda kv: -kv[1]):
+        for lvl in INDEX_LEVELS:
+            key = f"{sym}:{lvl}"
+            if pct < lvl or key in fired:
+                continue
+            urgent = lvl >= INDEX_URGENT_LEVEL
+            ok = push(f"{sym} +{pct:.1f}% - MARKET-WIDE RUN",
+                      f"{sym} is up {pct:.1f}% on the day (crossed +{lvl:g}%). "
+                      f"The whole market is moving, not one name.",
+                      priority="max" if urgent else "high", tags="rocket",
+                      click=f"https://robinhood.com/stocks/{sym}")
+            if ok is not False:
+                fired.append(key)
+                sent += 1
+    return sent
+
+
+def send_broad(kind, pending, rows, state, now_ts):
+    """One heads-up when the whole board is climbing at once.
+
+    too_broad() rightly holds the per-name rate alerts on a melt-up day - they
+    would all be beta - but holding them silently meant a 4% market-wide day
+    (Oct 2026) produced no alert at all. This sends a single summary instead,
+    at most once per kind per day, led by the biggest names so it can still be
+    acted on. Returns True if it sent.
+    """
+    if state is None:
+        state = {}
+    today = local_date(now_ts)
+    sent = state.setdefault("broad_sent", {})
+    if sent.get(kind) == today:
+        return False
+    top = sorted(pending, key=lambda t: -(t[1].get("pct") or 0))[:5]
+    names = ", ".join(f"{t[1]['symbol']} {t[1].get('pct', 0):+.1f}%" for t in top)
+    label = "STOCKS" if kind == "stock" else "CRYPTO"
+    ok = push(f"MARKET-WIDE RALLY - {label}",
+              f"{len(pending)} of {len(rows)} {kind}s climbing at once. "
+              f"Leaders: {names}",
+              priority="high", tags="rocket")
+    if ok is not False:
+        sent[kind] = today
+    return ok is not False
+
+
 def alerts_so_far_today(state, key, now_ts):
     """How many rate alerts this name has already had today (Central day)."""
     if state is None:
@@ -2324,6 +2395,7 @@ def main():
     if too_broad(craw, crypto_rows):
         log(f"  {len(craw)} of {len(crypto_rows)} coins climbing - "
             f"market-wide, holding rate alerts")
+        send_broad("coin", craw, crypto_rows, state, now_ts)
         craw = []
     crate = filter_tradable(craw, tradable, 1)
     if craw:
@@ -2371,6 +2443,14 @@ def main():
             save_state(state)
             return 2
 
+        try:
+            moves = index_moves(yf)
+            if moves:
+                log("  index: " + ", ".join(f"{k} {v:+.2f}%" for k, v in moves.items()))
+                send_index_alerts(moves, state)
+        except Exception as exc:
+            log(f"  index watch failed ({exc}) - alerts unaffected")
+
         # Screen well below every alert floor: this list is the tracking
         # universe, and a stock only up 0.5% now is exactly the one whose run
         # we want already stamped when it starts.
@@ -2388,6 +2468,7 @@ def main():
         if too_broad(sraw, stock_rows):
             log(f"  {len(sraw)} of {len(stock_rows)} stocks climbing - "
                 f"market-wide, holding rate alerts")
+            send_broad("stock", sraw, stock_rows, state, now_ts)
             sraw = []
         srate = filter_tradable(sraw, tradable, 1)
         if sraw:
