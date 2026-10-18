@@ -6,7 +6,7 @@
   "_buys_note": "",
   "_max_open_lots": 30,
   "_crypto_cost_cap_usd": 40000,
-  "_crash_budget_usd": 8764,
+  "_crash_budget_usd": 8544,
   "_tax_lot_rule": "Standing order for 2026 sales (IRS Notice 2026-20, recorded 2026-10-16): each crypto sale disposes of the lot(s) its order was placed for, as listed here and in the trade log when the order was placed; if an order covering several lots fills only in part, the highest-cost lot goes first. A sale with no recorded lot follows FIFO.",
   "positions": [
     {
@@ -97,19 +97,6 @@
       "room_override_pct": 15,
       "routing": "market_maker",
       "decimals": 7,
-      "bought": "2026-10-13",
-      "stop_placed": "2026-10-13"
-    },
-    {
-      "symbol": "AERO#3",
-      "product": "AERO-USD",
-      "qty": 1500,
-      "avg_cost": 0.92290668,
-      "spread_pct": 1.06,
-      "current_stop": 0.77616,
-      "room_override_pct": 15,
-      "routing": "market_maker",
-      "decimals": 5,
       "bought": "2026-10-13",
       "stop_placed": "2026-10-13"
     },
