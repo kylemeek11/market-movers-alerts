@@ -871,6 +871,20 @@ check("first_red cuts a red line to its headline",
 check("a hot week is information, not a red line (2026-10-16, weekly momentum research)",
       ab.first_red(["hot week: up 27% on the week (not a veto since 10-16: weekly momentum "
                     "research)"]) is None)
+# The memecoin pack counts as one coin (2026-10-18): a second memecoin is an
+# add to the first, and an add never gets the star.
+shib = dict(OPEN_BOOK, positions=[lot("SHIB", 10_000_000, 0.00001, 0.0000085)])
+check("a memecoin while another memecoin is held: no star, and it says which",
+      ab.buy_gate("PEPE", NOON_CT, shib)
+      == (False, "memecoin pack already held (SHIB): counts as one coin"), ab.buy_gate("PEPE", NOON_CT, shib))
+check("a non-memecoin is unaffected", ab.buy_gate("GRT", NOON_CT, shib) == (True, "$500 lot"))
+check("a memecoin on a book with no memecoin: a buy", ab.buy_gate("PEPE", NOON_CT, OPEN_BOOK) == (True, "$500 lot"))
+check("a memecoin starred earlier in the same run counts as held",
+      ab.buy_gate("PEPE", NOON_CT, OPEN_BOOK, pending=[{"symbol": "BONK", "usd": 500.0}])
+      == (False, "memecoin pack already starred this run"))
+check("the pack list has the sub-penny names the correlation study named",
+      {"SHIB", "PEPE", "BONK", "FLOKI", "MEW", "PENGU"} <= ab.MEME_PACK)
+
 # The crash budget (2026-10-16): the loss if every coin fell as far below its
 # stop as on Oct 10, 2025, new lot included.
 CG = {"PYTH": 0.54, "_default": 0.21}
