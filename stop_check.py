@@ -129,6 +129,17 @@ RATCHET = True
 EXCHANGE_TAKER_FEE_PCT = 0.95
 # Fills land a touch under the stop (NEAR 2026-09-17: $3.40 -> $3.3942, 0.17%).
 SLIPPAGE_PCT = 0.2
+# What a filled stop costs, as the alerts show it (2026-10-17; Kyle: "i don't
+# like thinking i'm losing $50 when i'm losing $500"). The old line printed
+# qty x (price - stop) for each lot: how far today's price sat above the stop.
+# At 7:04 PM CT Oct 17 the seven PYTH lots read about $65 together, and the
+# stop had already filled at 5:19 PM for -$521 against what was paid. Every
+# alert now leads with the loss against cost if the stop fills, per coin,
+# with the fill this far under the stop price. Fills measured: PYTH Oct 17
+# 0.96%, BAT Oct 15 0.29%, the five Oct 14 fills within 0.35%. The breakeven
+# floor keeps SLIPPAGE_PCT; the loss shown uses the worse figure so it never
+# understates.
+FILL_SLIPPAGE_PCT = 1.0
 
 # Order age. Robinhood: "a GTC order will expire after 90 calendar days."
 GTC_EXPIRY_DAYS = 90
@@ -361,6 +372,33 @@ def fmt(value, decimals):
     return f"{value:,.{decimals}f}"
 
 
+def base_symbol(symbol):
+    """The coin a lot belongs to: 'PYTH#3' -> 'PYTH'."""
+    return str(symbol or "").split("#")[0].upper()
+
+
+def signed_usd(x):
+    """-$521 / +$1,859 / $0, whole dollars."""
+    r = round(x)
+    if r == 0:
+        return "$0"
+    return f"{'-' if r < 0 else '+'}${abs(r):,}"
+
+
+def coin_fills(evaluated):
+    """Per coin, first-seen order: (coin, lots, cost, loss_if_filled), summed
+    over every lot of that coin. A loss is positive; a locked gain negative."""
+    out = {}
+    for ev in evaluated or []:
+        if ev.get("loss_if_filled") is None:
+            continue
+        c = out.setdefault(base_symbol(ev.get("symbol")), [0, 0.0, 0.0])
+        c[0] += 1
+        c[1] += float(ev.get("cost") or 0.0)
+        c[2] += float(ev["loss_if_filled"])
+    return [(k, v[0], v[1], v[2]) for k, v in out.items()]
+
+
 # --- Evaluation -------------------------------------------------------------
 
 def evaluate(pos, price, candles):
@@ -395,6 +433,7 @@ def evaluate(pos, price, candles):
     if ratcheted:
         stop = float(live)
     qty = float(pos["qty"])
+    cost = qty * float(pos["avg_cost"])
     return {
         "symbol": pos["symbol"],
         "price": price,
@@ -408,7 +447,11 @@ def evaluate(pos, price, candles):
         "lock_price": lock_price(breakeven, room, spread),
         "room": room,
         "reason": reason,
+        # risk: how far today's price sits above the stop, in dollars. Not a
+        # loss figure, and no longer shown as one; loss_if_filled is.
         "risk": qty * (price - stop),
+        "cost": cost,
+        "loss_if_filled": cost - qty * stop * (1 - FILL_SLIPPAGE_PCT / 100.0),
         "value": qty * price,
         "vs_cost": (stop / float(pos["avg_cost"]) - 1) * 100.0,
         "current_stop": pos.get("current_stop"),
@@ -536,7 +579,16 @@ def describe(ev, why):
     if live is not None:
         detail += f" (live: ${fmt(live, d)})"
     lines.append(detail)
-    lines.append(f"  risk ${ev['risk']:,.0f} | {ev['vs_cost']:+.1f}% vs cost")
+    if ev.get("loss_if_filled") is not None:
+        lines.append(f"  if it fills: {signed_usd(-ev['loss_if_filled'])} against the "
+                     f"${ev['cost']:,.0f} you paid (stop {ev['vs_cost']:+.1f}% vs "
+                     f"cost, ~{FILL_SLIPPAGE_PCT:g}% fill slippage)")
+    else:
+        lines.append(f"  stop {ev['vs_cost']:+.1f}% vs cost")
+    if ev.get("stop"):
+        gap = (ev["price"] / ev["stop"] - 1) * 100.0
+        lines.append(f"  price is {abs(gap):.1f}% {'above' if gap >= 0 else 'under'} "
+                     f"the stop")
     if ev.get("ratcheted"):
         lines.append(f"  HELD at your live stop - the measured room would put "
                      f"it at ${fmt(ev['measured_stop'], d)}, but stops only "
@@ -565,10 +617,19 @@ def needs_action(why):
     return "will fire" not in why
 
 
-def alert_title(to_alert):
+def alert_title(to_alert, evaluated=None):
+    """With the run's evaluated lots, an about-to-fire title carries what each
+    coin loses against cost if its stop fills (every lot of the coin)."""
     symbols = ", ".join(ev["symbol"] for ev, _ in to_alert)
     if any(needs_action(why) for _, why in to_alert):
         return f"Stops to update: {symbols}"
+    coins = list(dict.fromkeys(base_symbol(ev["symbol"]) for ev, _ in to_alert))
+    fills = {c: (n, loss) for c, n, _, loss in coin_fills(evaluated)}
+    if coins and all(c in fills for c in coins):
+        parts = [f"{c}{f' ({fills[c][0]} lots)' if fills[c][0] > 1 else ''} "
+                 f"{signed_usd(-fills[c][1])}" for c in coins]
+        word = "Stop" if len(coins) == 1 else "Stops"
+        return f"{word} about to fire: {', '.join(parts)} vs what you paid"
     return f"Stop about to fire: {symbols}"
 
 
@@ -632,12 +693,21 @@ def main():
     push_failed = False
     if to_alert:
         symbols = ", ".join(ev["symbol"] for ev, _ in to_alert)
-        total_risk = sum(ev["risk"] for ev in evaluated)
         total_value = sum(ev["value"] for ev in evaluated)
+        total_cost = sum(ev.get("cost") or 0.0 for ev in evaluated)
+        total_loss = sum(ev.get("loss_if_filled") or 0.0 for ev in evaluated)
         body = "\n\n".join(describe(ev, why) for ev, why in to_alert)
-        body += (f"\n\nBook ${total_value:,.0f} | "
-                 f"at risk ${total_risk:,.0f} "
-                 f"({total_risk / total_value * 100:.1f}%) at these levels")
+        coins = list(dict.fromkeys(base_symbol(ev["symbol"]) for ev, _ in to_alert))
+        fills = {c: (n, cost, loss) for c, n, cost, loss in coin_fills(evaluated)}
+        per_coin = [f"  {c}{f', all {fills[c][0]} lots' if fills[c][0] > 1 else ''}: "
+                    f"{signed_usd(-fills[c][2])} against ${fills[c][1]:,.0f} paid"
+                    for c in coins if c in fills]
+        if per_coin:
+            body += ("\n\nIf these stops fill (vs what you paid, ~"
+                     f"{FILL_SLIPPAGE_PCT:g}% fill slippage):\n" + "\n".join(per_coin))
+        body += (f"\n\nBook ${total_value:,.0f} now, ${total_cost:,.0f} paid. "
+                 f"If every stop fills: {signed_usd(-total_loss)} against what "
+                 f"you paid.")
         if any(needs_action(why) for _, why in to_alert):
             body += "\nCancel the old stop before entering the new one."
         body += ("\nPrices are Coinbase's; Robinhood's quote can sit "
@@ -645,7 +715,7 @@ def main():
         if skipped:
             body += (f"\nNot checked (no price): {', '.join(skipped)}")
         sent = push(
-            title=alert_title(to_alert),
+            title=alert_title(to_alert, evaluated),
             message=body,
             priority="max" if overnight else "high",
             tags="lock",
