@@ -815,7 +815,7 @@ def buy_verdict(r, what, now_ts, state=None, kind="base", lines=()):
     if ok:
         return {"quiet": False, "tags": BUY_TAG, "usd": usd,
                 "title": f"{sym} - BUY {note} - {what}",
-                "head": f"BUY NOW: {note}, then the 15% stop below as soon as it fills"}
+                "head": buy_head(note, usd)}
     if not in_buy_window(now_ts):
         remember_night_star(state, r, what, now_ts, kind)
         return {"quiet": True, "tags": WAIT_TAG, "usd": 0.0,
@@ -892,7 +892,7 @@ def send_night_digest(state, rows, now_ts, btc_price=None):
             rest.append((s, f"{sym}: {seen} - {note}"))
             continue
         breakeven, stop = cost_hints(now_p)
-        body = [f"BUY NOW: {note}, then the 15% stop below as soon as it fills",
+        body = [buy_head(note, usd),
                 f"{row.get('name') or sym}  -  {money(now_p)}",
                 f"overnight: {seen}",
                 "re-checked now: still a base breakout, no red line, the book has room",
@@ -1475,6 +1475,32 @@ def cost_hints(price):
     breakeven = price * (1 + m) / (1 - m)
     stop = price * (1 - STOP_HINT_PCT / 100.0) * (1 - m)
     return breakeven, stop
+
+
+# What a gold-star lot loses if its stop fills (2026-10-17; Kyle: "i don't
+# like thinking i'm losing $50 when i'm losing $500"): the 15% stop from the
+# hint, Robinhood's markup on the buy, and a fill about 1% under the stop
+# (stop_check.FILL_SLIPPAGE_PCT; PYTH filled 0.96% under on Oct 17). A $500
+# lot loses about $87, a $250 half lot about $44.
+FILL_SLIPPAGE_PCT = 1.0
+
+
+def stop_loss_usd(usd):
+    """Dollars a new lot of `usd` loses against cost if its 15% stop fills."""
+    m = EXEC_MARKUP_PCT / 100.0
+    kept = ((1 - STOP_HINT_PCT / 100.0) * (1 - m) / (1 + m)
+            * (1 - FILL_SLIPPAGE_PCT / 100.0))
+    return float(usd) * (1 - kept)
+
+
+def buy_head(note, usd):
+    """The first line of a gold-star alert: the order, then what its stop
+    costs if it fills, against what is paid."""
+    head = f"BUY NOW: {note}, then the 15% stop below as soon as it fills"
+    if usd:
+        head += (f". If that stop fills: about -${stop_loss_usd(usd):,.0f} "
+                 f"of the ${float(usd):,.0f}")
+    return head
 
 
 def format_body(row):
