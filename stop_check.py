@@ -784,7 +784,9 @@ def main():
                      f"reminder repeats every check until the lot is removed from "
                      f"positions.json.")
         if any(needs_action(why) and not is_hold_sale(why) for _, why in to_alert):
-            body += "\nCancel the old stop before entering the new one."
+            body += ("\nCancel the old stop before entering the new one, then move "
+                     "that coin's Robinhood price alert to the new stop (and its "
+                     "second alert to 5% under the coin's lowest stop).")
         body += ("\nPrices are Coinbase's; Robinhood's quote can sit "
                  "~0.5% either side, so re-check on the ticket.")
         if skipped:
