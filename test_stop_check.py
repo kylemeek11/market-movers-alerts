@@ -668,6 +668,16 @@ def test_main_sells_at_day_30():
         sent.clear()
         rc = sc.main()
         check("a second run within 3 hours stays quiet", rc == 0 and not sent, sent)
+        # A raise names the Robinhood alert to move (2026-10-18).
+        sent.clear()
+        cfg["positions"][0]["current_stop"] = 70.0        # far below the 84.15 measurement
+        cfg["positions"][0]["bought"] = "2026-10-19"      # young again
+        (tmp / "positions.json").write_text(json.dumps(cfg))
+        (tmp / "state.json").write_text("{}")
+        rc = sc.main()
+        title, body, kw = sent[-1]
+        check("a raise says to move the Robinhood price alert too",
+              title.startswith("Stops to update") and "Robinhood price alert" in body, (title, body[-300:]))
     finally:
         sc.CONFIG_FILE, sc.STATE_FILE, sc.fetch_price, sc.fetch_candles, sc.push, sc.local_now = saved
 
