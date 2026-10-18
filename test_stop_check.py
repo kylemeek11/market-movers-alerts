@@ -532,6 +532,63 @@ def test_main_is_loud_about_failures():
         sc.CONFIG_FILE, sc.STATE_FILE, sc.fetch_price, sc.fetch_candles, sc.push = saved
 
 
+def test_loss_if_filled():
+    """Alerts show the loss against cost if a stop fills (2026-10-17): per
+    coin, with ~1% fill slippage, never the drop from today's price."""
+    calm = make_candles(base=0.07935, night_drops={1: 4.0, 2: 3.0})
+    lots = [("PYTH", 5500, 0.089941), ("PYTH#2", 4500, 0.08363177),
+            ("PYTH#3", 20000, 0.088033436), ("PYTH#4", 10000, 0.0838452),
+            ("PYTH#5", 10000, 0.082852379), ("PYTH#6", 5000, 0.088523646),
+            ("PYTH#7", 5000, 0.08644379)]
+    evs = []
+    for sym, qty, avg in lots:
+        pos = {"symbol": sym, "product": "PYTH-USD", "qty": qty, "avg_cost": avg,
+               "spread_pct": 1.09, "current_stop": 0.0783, "room_override_pct": 15,
+               "routing": "market_maker", "decimals": 6}
+        evs.append(sc.evaluate(pos, 0.07935, calm))
+    ev = evs[2]
+    check("cost is qty x avg cost", near(ev["cost"], 20000 * 0.088033436, 1e-6),
+          ev["cost"])
+    check("loss if filled: cost minus the stop's proceeds, ~1% under the stop",
+          near(ev["loss_if_filled"], 20000 * 0.088033436 - 20000 * 0.0783 * 0.99, 1e-6),
+          ev["loss_if_filled"])
+    old = sum(e["risk"] for e in evs)
+    new = sum(e["loss_if_filled"] for e in evs)
+    check("Oct 17 PYTH: the old alert figure was about $63", 55 < old < 70, old)
+    check("...the loss against cost is about $522 (the fill lost $521)",
+          515 < new < 530, new)
+    text = sc.describe(ev, "x")
+    check("describe leads with the loss against cost",
+          "if it fills: -$" in text and "you paid" in text and "risk $" not in text,
+          text)
+    check("describe says how far the price is above the stop",
+          "above the stop" in text, text)
+    fills = sc.coin_fills(evs)
+    check("coin_fills sums every lot of a coin",
+          len(fills) == 1 and fills[0][0] == "PYTH" and fills[0][1] == 7
+          and near(fills[0][3], new, 1e-6), fills)
+    fire = [(e, "price is back down at your stop - it will fire") for e in evs]
+    title = sc.alert_title(fire, evs)
+    check("an about-to-fire title carries the coin's loss",
+          title == f"Stop about to fire: PYTH (7 lots) -${round(new):,} vs what you paid",
+          title)
+    check("without the evaluated lots the title is unchanged",
+          sc.alert_title(fire[:1]) == "Stop about to fire: PYTH", sc.alert_title(fire[:1]))
+    win = sc.evaluate({"symbol": "STRK", "product": "STRK-USD", "qty": 50000,
+                       "avg_cost": 0.05376, "spread_pct": 1.2,
+                       "current_stop": 0.091039, "room_override_pct": 15,
+                       "routing": "market_maker", "decimals": 6},
+                      0.0925, make_candles(base=0.0925))
+    check("a stop above cost shows a gain", win["loss_if_filled"] < 0,
+          win["loss_if_filled"])
+    check("...worded as plus dollars", "if it fills: +$" in sc.describe(win, "x"),
+          sc.describe(win, "x"))
+    check("signed_usd formats whole dollars",
+          sc.signed_usd(-521.4) == "-$521" and sc.signed_usd(1859.2) == "+$1,859"
+          and sc.signed_usd(0.3) == "$0",
+          (sc.signed_usd(-521.4), sc.signed_usd(1859.2), sc.signed_usd(0.3)))
+
+
 def test_no_trading_surface():
     """The script must have no way to place an order. Belt and braces."""
     from pathlib import Path
