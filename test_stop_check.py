@@ -589,6 +589,89 @@ def test_loss_if_filled():
           (sc.signed_usd(-521.4), sc.signed_usd(1859.2), sc.signed_usd(0.3)))
 
 
+def test_hold_limit():
+    """The 30-day maximum hold (2026-10-18): from day 30 after the buy, each
+    daytime stop check says to sell that lot at market; the replay behind the
+    scheme closed every position at 30 days."""
+    from datetime import date
+    pos = {"symbol": "XCN#4", "product": "XCN-USD", "qty": 500000,
+           "avg_cost": 0.00446541, "spread_pct": 1.14, "current_stop": 0.0037523,
+           "room_override_pct": 15, "routing": "market_maker", "decimals": 7,
+           "bought": "2026-10-13"}
+    check("age counts whole days from the bought date",
+          sc.hold_age_days(pos, date(2026, 11, 12)) == 30
+          and sc.hold_age_days(pos, date(2026, 11, 11)) == 29)
+    check("no bought date, no age", sc.hold_age_days({"symbol": "X"}, date(2026, 11, 12)) is None)
+    check("day 29: nothing", sc.hold_limit_reason(pos, date(2026, 11, 11), hour=11) is None)
+    r = sc.hold_limit_reason(pos, date(2026, 11, 12), hour=11)
+    check("day 30 at 11 AM: sell", r is not None and r.startswith("DAY 30:")
+          and "sell this lot at market" in r and "2026-10-13" in r, r)
+    check("day 30 at 3 AM: wait for the window",
+          sc.hold_limit_reason(pos, date(2026, 11, 12), hour=3) is None)
+    check("day 30 at 7 PM: wait for the window",
+          sc.hold_limit_reason(pos, date(2026, 11, 12), hour=19) is None)
+    check("day 45 still says sell", sc.hold_limit_reason(pos, date(2026, 11, 27), hour=15).startswith("DAY 45:"))
+    check("it is an action, and a hold sale",
+          sc.needs_action(r) and sc.is_hold_sale(r) and not sc.is_hold_sale("live stop too loose by 3.1% of price"))
+    ev = sc.evaluate(pos, 0.004011, make_candles(base=0.004011, night_drops={1: 4.0, 2: 3.0}))
+    text = sc.describe(ev, r)
+    check("describe shows the sale against cost and the quantity",
+          "if sold now: -$" in text and "you paid" in text and "sell 500,000 at market" in text, text)
+    check("...and not for an ordinary alert", "if sold now" not in sc.describe(ev, "x"))
+    fire = ({"symbol": "GRT"}, "price is back down at your stop - it will fire")
+    check("title: a sale alone",
+          sc.alert_title([(ev, r)]) == "Sell today (30-day limit): XCN#4", sc.alert_title([(ev, r)]))
+    check("title: a sale plus another item",
+          sc.alert_title([(ev, r), fire]) == "Sell today (30-day limit): XCN#4; stops to check: GRT",
+          sc.alert_title([(ev, r), fire]))
+    now = 1_000_000.0
+    check("reminder suppressed within 3 hours, not after",
+          sc.hold_suppressed("XCN#4", {"hold:XCN#4": {"ts": now - 3600}}, now)
+          and not sc.hold_suppressed("XCN#4", {"hold:XCN#4": {"ts": now - 4 * 3600}}, now)
+          and not sc.hold_suppressed("XCN#4", {}, now))
+
+
+def test_main_sells_at_day_30():
+    """End to end: a lot past 30 days gets the sale reminder inside the
+    window, marked once per check, and the title names it."""
+    import tempfile
+    from pathlib import Path
+    from datetime import datetime as _dt
+    tmp = Path(tempfile.mkdtemp())
+    cfg = {"positions": [{"symbol": "LTC", "product": "LTC-USD", "qty": 10,
+                          "avg_cost": 100.0, "spread_pct": 1.0, "current_stop": 90.0,
+                          "room_override_pct": 15, "routing": "market_maker",
+                          "decimals": 2, "bought": "2026-09-01", "stop_placed": "2026-10-15"}]}
+    (tmp / "positions.json").write_text(json.dumps(cfg))
+    saved = (sc.CONFIG_FILE, sc.STATE_FILE, sc.fetch_price, sc.fetch_candles, sc.push, sc.local_now)
+    sent = []
+
+    class Noon:
+        hour = 11
+        def date(self):
+            return _dt(2026, 10, 20).date()
+
+    try:
+        sc.CONFIG_FILE, sc.STATE_FILE = tmp / "positions.json", tmp / "state.json"
+        sc.fetch_candles = lambda product, chunks=None: make_candles(base=100.0, night_drops={1: 4.0, 2: 3.0})
+        sc.fetch_price = lambda product: 100.0
+        sc.push = lambda title, message, **k: (sent.append((title, message, k)), True)[1]
+        sc.local_now = lambda tz_name=None: Noon()
+        rc = sc.main()
+        title, body, kw = sent[-1]
+        check("day-30 lot: the run pushes a sale", rc == 0 and title == "Sell today (30-day limit): LTC", title)
+        check("...the body says what the sale makes against cost and how",
+              "if sold now:" in body and "sell 10 at market" in body and "30-day limit" in body, body)
+        check("...with the money tag", kw.get("tags") == "moneybag", kw)
+        state = json.loads((tmp / "state.json").read_text())
+        check("...and it is marked under hold:", "hold:LTC" in state, state)
+        sent.clear()
+        rc = sc.main()
+        check("a second run within 3 hours stays quiet", rc == 0 and not sent, sent)
+    finally:
+        sc.CONFIG_FILE, sc.STATE_FILE, sc.fetch_price, sc.fetch_candles, sc.push, sc.local_now = saved
+
+
 def test_no_trading_surface():
     """The script must have no way to place an order. Belt and braces."""
     from pathlib import Path
