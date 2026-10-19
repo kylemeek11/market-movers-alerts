@@ -1011,6 +1011,22 @@ try:
                    False, state=None, now_ts=NOON_CT)
     check("a threshold crossing is a mover: quiet feed",
           sent and sent[-1][2].get("quiet") is True and sent[-1][2].get("priority") == "low", sent[-1:])
+    check("...and it is marked as a mover push, so MOVER_PUSHES drops it (2026-10-19)",
+          sent[-1][2].get("mover") is True, sent[-1:])
+    sent.clear()
+    ab.send_dip({"symbol": "GRT", "why": "test"}, {"off_high": 12.0, "high": 0.034, "off_low": 4.0, "low": 0.0288}, 0.03)
+    check("the dip push is marked as a mover push", sent and sent[-1][2].get("mover") is True, sent[-1:])
+    sent.clear()
+    _tsb = ab.TOP_SETUP_IS_BUY
+    ab.TOP_SETUP_IS_BUY = False
+    try:
+        ab.send_rate([("rate:crypto:GRT", dict(grt), 3.9, 71.0, 6.2)], {}, NOON_CT, False, state={"alerts_today": {}, "streak": {}})
+    finally:
+        ab.TOP_SETUP_IS_BUY = _tsb
+    check("a quiet rate alert is marked as a mover push", sent and sent[-1][2].get("mover") is True, sent[-1:])
+    sent.clear()
+    ab.send_rate([("rate:crypto:GRT", dict(grt), 3.9, 71.0, 6.2)], {}, NOON_CT, False, state={"alerts_today": {}, "streak": {}})
+    check("a starred rate alert (TOP SETUP on) is not a mover push", sent and sent[-1][2].get("mover") is False, sent[-1:])
 
     # The gold star end to end (2026-10-16). SEVEN_AM above is a Saturday, when
     # no base breakout is green, so these run Monday night to Tuesday morning.
@@ -1234,6 +1250,23 @@ try:
           ab.LOUD_ONLY is False or (ab.push("t", "m") is True and calls[-1][0].endswith("/main-topic-quiet")))
     check("with LOUD_ONLY, a gold-star BUY still goes to the main topic (2026-10-19)",
           ab.push("t", "m", tags=ab.BUY_TAG) is True and calls[-1][0].endswith("/main-topic"))
+    # Mover pushes off (2026-10-19): dropped before any network call, True returned.
+    check("MOVER_PUSHES ships off", ab.MOVER_PUSHES is False)
+    n_before = len(calls)
+    check("a mover push is dropped, not sent, and reads as sent",
+          ab.push("t", "m", quiet=True, mover=True) is True and len(calls) == n_before, calls[n_before:])
+    check("a loud mover push is dropped too",
+          ab.push("t", "m", priority="max", mover=True) is True and len(calls) == n_before)
+    check("a non-mover push still goes out", ab.push("t", "m", quiet=True) is True and len(calls) == n_before + 1)
+    check("the gold star is never a mover", ab.push("t", "m", tags=ab.BUY_TAG) is True and len(calls) == n_before + 2)
+    saved_mp = ab.MOVER_PUSHES
+    ab.MOVER_PUSHES = True
+    try:
+        check("MOVER_PUSHES True restores the mover pushes (quiet feed under LOUD_ONLY)",
+              ab.push("t", "m", quiet=True, mover=True) is True and len(calls) == n_before + 3
+              and calls[-1][0].endswith("/main-topic-quiet"))
+    finally:
+        ab.MOVER_PUSHES = saved_mp
     before = ab.PUSH_STATS["failed"]
     calls.clear()
 
