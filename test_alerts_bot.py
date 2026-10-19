@@ -827,8 +827,19 @@ paused = dict(OPEN_BOOK, _buys_allowed=False, _buys_note="over the open-risk lim
 check("the switch off: no buys, with its note",
       ab.buy_gate("PYTH", NOON_CT, paused) == (False, "over the open-risk limit"))
 full = dict(OPEN_BOOK, positions=[lot(f"C{i}", 1, 10.0, 8.0) for i in range(10)])
-check("ten lots open: no buys", ab.buy_gate("PYTH", NOON_CT, full) == (False, "10 lots open, max 10"),
+check("ten coins held: no buys", ab.buy_gate("PYTH", NOON_CT, full) == (False, "10 coins held, max 10"),
       ab.buy_gate("PYTH", NOON_CT, full))
+stacked = dict(OPEN_BOOK, positions=[lot(f"C{i}", 1, 10.0, 8.0) for i in range(5)]
+               + [lot(f"C{i}#{k}", 1, 10.0, 8.0) for i in range(3) for k in (2, 3)])    # 11 lots, 5 coins
+check("slots are coins, not lots: eleven lots on five coins leave room (2026-10-19)",
+      ab.buy_gate("PYTH", NOON_CT, stacked) == (True, "$500 lot"), ab.buy_gate("PYTH", NOON_CT, stacked))
+check("...and a held coin's second lot is judged by the add rule, not the slot count",
+      ab.buy_gate("C0", NOON_CT, dict(full, positions=full["positions"] + [lot("C0#2", 1, 10.0, 8.0)]))
+      == (False, "held, first lot not locked: no add"))
+check("a lower cap in the book is honoured; a missing one means ten",
+      ab.buy_gate("PYTH", NOON_CT, dict(full, _max_open_coins=12)) == (True, "$500 lot")
+      and ab.buy_gate("PYTH", NOON_CT, dict(stacked, _max_open_coins=5)) == (False, "5 coins held, max 5")
+      and "_max_open_coins" not in full and ab.DEFAULT_MAX_COINS == 10)
 heavy = dict(OPEN_BOOK, positions=[lot("BAT", 100000, 0.396, 0.3)])
 check("at the $40K crypto cap: no buys", ab.buy_gate("PYTH", NOON_CT, heavy)[0] is False
       and "cap" in ab.buy_gate("PYTH", NOON_CT, heavy)[1], ab.buy_gate("PYTH", NOON_CT, heavy))
@@ -851,9 +862,9 @@ check("buy_decision gives the size too, halved for a yellow flag",
       == (True, "$250 lot (half size: high-vol coin)", 250.0),
       ab.buy_decision("PYTH", NOON_CT, OPEN_BOOK, half="high-vol coin"))
 nine = dict(OPEN_BOOK, positions=[lot(f"C{i}", 1, 10.0, 8.0) for i in range(9)])
-check("a star earlier in the same run counts as a lot",
+check("a star earlier in the same run counts as a coin",
       ab.buy_gate("PYTH", NOON_CT, nine, pending=[{"symbol": "GRT", "usd": 500.0}])
-      == (False, "9 lots open + 1 starred this run, max 10")
+      == (False, "9 coins held + 1 starred this run, max 10")
       and ab.buy_gate("PYTH", NOON_CT, nine) == (True, "$500 lot"),
       ab.buy_gate("PYTH", NOON_CT, nine, pending=[{"symbol": "GRT", "usd": 500.0}]))
 near_cap = dict(OPEN_BOOK, positions=[lot("BAT", 100000, 0.392, 0.3)])          # $39,200
@@ -963,9 +974,9 @@ try:
     ab.send_rate([("rate:crypto:GRT", dict(grt), 3.9, 71.0, 6.2)], {}, NOON_CT, False,
                  state={"alerts_today": {}, "streak": {}})
     title, body, kw = sent[-1]
-    check("ten lots open: no star, quiet, with the reason",
+    check("ten coins held: no star, quiet, with the reason",
           kw.get("quiet") is True and kw.get("tags") == "no_entry_sign"
-          and title.endswith("(10 lots open, max 10)"), (title, kw))
+          and title.endswith("(10 coins held, max 10)"), (title, kw))
     ab.load_book = lambda: OPEN_BOOK
     sent.clear()
     hot = dict(grt, week_pct=25.0)
@@ -1140,7 +1151,7 @@ try:
     ab.send_night_digest(gstate(night_stars=list(night)), [dict(grt, price=0.0300)], TUE_7AM)
     check("7 AM with the book full: no star, quiet, the reason listed",
           sent and sent[-1][2].get("quiet") is True and sent[-1][2].get("tags") == "no_entry_sign"
-          and "10 lots open, max 10" in sent[-1][1], sent[-1:])
+          and "10 coins held, max 10" in sent[-1][1], sent[-1:])
     ab.load_book = lambda: nine
     sent.clear()
     st = gstate(night_stars=list(night) + [dict(night[0], symbol="ZRX")])
@@ -1150,7 +1161,7 @@ try:
     stars = [s for s in sent if s[2].get("tags") == "star"]
     check("two still green, room for one lot: one gold star, the other listed with the reason",
           len(stars) == 1 and stars[0][0].startswith("GRT - BUY")
-          and any("ZRX" in s[0] and "9 lots open + 1 starred this run, max 10" in s[1]
+          and any("ZRX" in s[0] and "9 coins held + 1 starred this run, max 10" in s[1]
                   for s in sent if s[2].get("quiet")), sent)
     ab.load_book = lambda: OPEN_BOOK
     st = gstate(night_stars=list(night))
