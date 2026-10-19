@@ -2154,6 +2154,13 @@ def send_alerts(pending, fired, high_level, overnight, state=None, btc_price=Non
         log(f"  {extra} queued for the next run")
 
 
+# What the backtest said about trading these bounces (2026-10-18 study, 15
+# coins, a year of hourly data): about 45% of +4% bounces reached +10% off the
+# low within 48h, but buy-at-the-bounce / sell-at-+10% / stop-at-the-low lost
+# about 2% a trade after Robinhood's spread in both halves of the year.
+DIP_ODDS_LINE = "history: ~45% of bounces reach +10%; as a trade, -2% avg after spread"
+
+
 def send_dip(coin, st, price):
     breakeven, stop = cost_hints(price)
     row = {"kind": "crypto", "symbol": coin["symbol"]}
@@ -2164,10 +2171,11 @@ def send_dip(coin, st, price):
         f"break-even {money(breakeven)}  -  "
         f"{STOP_HINT_PCT:.0f}% stop {money(stop)}",
         f"watching because: {coin['why']}" if coin.get("why") else "",
+        DIP_ODDS_LINE,
     ]).strip()
     push(f"{coin['symbol']} dip turning up ({st['off_high']:.0f}% off high)",
-         body, priority=QUIET_PRIORITY, tags="arrow_heading_up",
-         click=robinhood_url(row), quiet=True)
+         body, priority="default", tags="arrow_heading_up",
+         click=robinhood_url(row))
     log(f"  DIP {coin['symbol']} {st['off_high']:.1f}% off 7d high, "
         f"+{st['off_low']:.1f}% off 12h low")
 
