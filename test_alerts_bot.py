@@ -1232,6 +1232,8 @@ try:
     check("a loud push goes to the main topic", ab.push("t", "m", loud=True) is True and calls[-1][0].endswith("/main-topic"))
     check("with LOUD_ONLY, an ordinary push goes to the quiet topic (2026-10-19)",
           ab.LOUD_ONLY is False or (ab.push("t", "m") is True and calls[-1][0].endswith("/main-topic-quiet")))
+    check("with LOUD_ONLY, a gold-star BUY still goes to the main topic (2026-10-19)",
+          ab.push("t", "m", tags=ab.BUY_TAG) is True and calls[-1][0].endswith("/main-topic"))
     before = ab.PUSH_STATS["failed"]
     calls.clear()
 
