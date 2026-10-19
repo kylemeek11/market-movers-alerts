@@ -44,6 +44,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pullback
+
 # The daily checklist (tight-base breakouts, BTC red lights, volatility flag,
 # Bitstamp depth, overnight pass for green signals) lives in its own module.
 # Optional on purpose: if the file is missing, every alert still goes out
@@ -413,6 +415,11 @@ NTFY_TOPIC_QUIET = (os.environ.get("NTFY_TOPIC_QUIET", "").strip()
 if len(NTFY_TOPIC_QUIET) > 64:
     NTFY_TOPIC_QUIET = ""
 QUIET_PRIORITY = "low"
+# Oct 19 2026: Kyle wants his phone to buzz only for patterns that passed a
+# two-period backtest (pullback.py), plus alerts about money already in -
+# stop checks - and the bot's own health. Everything else still goes out,
+# to the quiet feed. Set False to restore the old behaviour.
+LOUD_ONLY = True
 
 # The book and the standing rules (claude/trading-strategy.md, section 0).
 POSITIONS_FILE = Path(os.environ.get("POSITIONS_FILE", "positions.json"))
@@ -506,7 +513,7 @@ def session_fraction():
 
 
 def push(title, message, priority="default", tags="chart_with_upwards_trend",
-         click=None, quiet=False):
+         click=None, quiet=False, loud=False):
     """Send one notification. Headers must be ASCII; the body may be UTF-8.
 
     quiet=True sends it to the quiet feed at low priority. Returns True once
@@ -517,6 +524,8 @@ def push(title, message, priority="default", tags="chart_with_upwards_trend",
     import urllib.request
 
     topic = NTFY_TOPIC
+    if LOUD_ONLY and not loud:
+        quiet = True        # Kyle, Oct 19 2026: only tested signals buzz
     if quiet:
         priority = QUIET_PRIORITY
         topic = NTFY_TOPIC_QUIET or NTFY_TOPIC
@@ -1001,7 +1010,7 @@ def check_live_stops(state, now_ts, book=None, price_of=None):
                     "Robinhood: is each stop still open, filled or canceled?")
         if push(f"CHECK STOPS: {coin} under its stop limit", "\n".join(body),
                 priority="max", tags="rotating_light",
-                click=f"https://robinhood.com/crypto/{coin}") is not False:
+                click=f"https://robinhood.com/crypto/{coin}", loud=True) is not False:
             watch[coin] = now_ts
         log(f"  STOP WATCH {coin} {money(px)} under the limit of {len(hits)} stop(s)")
     if (len(at_stop) >= CRASH_MIN_COINS
@@ -1011,7 +1020,7 @@ def check_live_stops(state, now_ts, book=None, price_of=None):
                 f"{', '.join(coins)} are at or under their stop prices, so those "
                 f"stops should be filling. Check that each one filled or is "
                 f"still open, and report the fills so the records match.",
-                priority="max", tags="rotating_light") is not False:
+                priority="max", tags="rotating_light", loud=True) is not False:
             watch["_crash"] = now_ts
         log(f"  CRASH CHECK {len(coins)} coins at their stops: {', '.join(coins)}")
 
@@ -1285,8 +1294,10 @@ def load_state():
             return state
         log("  state is from a previous day - starting fresh")
         # The multi-day memory is the one thing that must outlive the reset.
-        return fresh_state(today, prune_streak(state.get("streak") or {}),
-                           prune_alert_log(state.get("alerts_today") or {}))
+        fresh = fresh_state(today, prune_streak(state.get("streak") or {}),
+                            prune_alert_log(state.get("alerts_today") or {}))
+        fresh["pullback_sent"] = state.get("pullback_sent") or []
+        return fresh
     except (OSError, ValueError):
         log("  no previous state found")
     return fresh_state(today)
@@ -2328,7 +2339,7 @@ def crypto_screen_failed(state):
              f"{n * 5} minutes). No crypto alert can fire until it recovers. "
              f"Usually CoinGecko rate-limiting, which normally clears itself; "
              f"if it does not, check the run log.",
-             priority="high", tags="warning")
+             priority="high", tags="warning", loud=True)
     return n
 
 
@@ -2404,7 +2415,7 @@ def main():
                   "A buy comes with a gold star in front of the title; "
                   "nothing else has one.",
                   priority="default", tags="white_check_mark",
-                  click="https://robinhood.com/stocks/")
+                  click="https://robinhood.com/stocks/", loud=True)
         quiet_ok = push("Market Movers test - quiet feed",
                         "This is the quiet feed: alerts that are not a buy "
                         "under the rules. It does not need to buzz.",
@@ -2506,6 +2517,19 @@ def main():
         log(f"{len(crypto_pending)} new tradable crypto threshold crossings")
     send_alerts(crypto_pending, fired, CRYPTO_HIGH_PRIORITY_LEVEL, overnight,
                 state=state, btc_price=btc_price, now_ts=now_ts)
+
+    # --- Pullback-in-uptrend (SPY/QQQ), once the daily bar is final ---
+    now_et = local_now(MARKET_TZ)
+    if pullback.in_window(now_et) or force:
+        try:
+            import yfinance as yf
+            today_et = (now_et or datetime.now(timezone.utc)).strftime("%Y-%m-%d")
+            closes, dates = {}, {}
+            for sym in pullback.PULLBACK_SYMBOLS:
+                closes[sym], dates[sym] = pullback.fetch_daily(yf, sym, today_et)
+            pullback.check_pullbacks(closes, dates, state, push, log)
+        except Exception as exc:
+            log(f"  pullback check failed ({exc}) - alerts unaffected")
 
     # --- Stocks: market hours only ---
     if force or market_is_open():
