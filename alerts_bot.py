@@ -524,8 +524,8 @@ def push(title, message, priority="default", tags="chart_with_upwards_trend",
     import urllib.request
 
     topic = NTFY_TOPIC
-    if LOUD_ONLY and not loud:
-        quiet = True        # Kyle, Oct 19 2026: only tested signals buzz
+    if LOUD_ONLY and not loud and tags != BUY_TAG:
+        quiet = True        # Kyle, Oct 19 2026: only tested signals and gold-star buys buzz
     if quiet:
         priority = QUIET_PRIORITY
         topic = NTFY_TOPIC_QUIET or NTFY_TOPIC
