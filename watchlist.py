@@ -40,8 +40,12 @@ WATCHLIST_FILE = Path("watchlist.json")
 API = "https://api.exchange.coinbase.com"
 
 WATCH_RATE_PCT = 2.0           # early-climb bar for watched coins (general: 3.0)
-DIP_PCT = 8.0                  # default: this far below the 7-day high
-TURN_PCT = 2.0                 # default: and this far up off the 12-hour low
+# Backtest, 15 Robinhood coins, hourly, two 6-month periods to 2026-10-18,
+# +10% target / 15% stop / 2% round-trip spread: 8/2 lost $1,594 and $6,631;
+# 15/3 made +$230 then lost $3,719 - the least bad of 72 settings both times.
+# Neither is a money-maker; 15/3 fires about half as often.
+DIP_PCT = 15.0                 # default: this far below the 7-day high
+TURN_PCT = 3.0                 # default: and this far up off the 12-hour low
 HIGH_WINDOW_H = 168            # 7 days
 LOW_WINDOW_H = 12
 DIP_COOLDOWN_SEC = 24 * 3600   # one dip alert per coin per day
