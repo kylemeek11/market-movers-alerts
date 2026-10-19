@@ -446,7 +446,11 @@ POSITIONS_FILE = Path(os.environ.get("POSITIONS_FILE", "positions.json"))
 BUY_START_HOUR = 7          # rule 1: nothing bought 7 PM - 7 AM Central
 BUY_END_HOUR = 19
 DEFAULT_LOT_USD = 500
-DEFAULT_MAX_LOTS = 10
+# Slots are coins, not lots (2026-10-19): the replays that size the scheme
+# hold one position per coin, and the add rule bounds the lots of one coin.
+# Ten slots kept 95% of the ten-year replay's money with two thirds of the
+# trades and a shallower worst stretch (claude/full-history-replay-2026-10-19.md).
+DEFAULT_MAX_COINS = 10
 DEFAULT_CRYPTO_CAP_USD = 40_000
 NIGHT_DIGEST_MAX_AGE_H = 14
 
@@ -686,12 +690,14 @@ def buy_decision(symbol, now_ts, book=None, pending=None, half=None):
 
     The checks are the standing rules (claude/trading-strategy.md): the
     7 AM - 7 PM window, the "_buys_allowed" switch (off while open risk is
-    over the limit), at most "_max_open_lots" lots, open crypto cost plus one
-    lot within "_crypto_cost_cap_usd" (no new margin), the crash budget when
-    "_crash_budget_usd" is set (see CRASH_GAPS_FILE), and no alert buy of a
-    coin already held: under the add rule an add comes only from a calm stop
-    check (the coin up under 5% on the day), which a breakout day never is.
-    The memecoin pack (MEME_PACK) counts as one coin for that rule.
+    over the limit), at most "_max_open_coins" coins held at once (a coin's
+    lots count once; a star for a coin not yet held needs a free slot), open
+    crypto cost plus one lot within "_crypto_cost_cap_usd" (no new margin),
+    the crash budget when "_crash_budget_usd" is set (see CRASH_GAPS_FILE),
+    and no alert buy of a coin already held: under the add rule an add comes
+    only from a calm stop check (the coin up under 5% on the day), which a
+    breakout day never is. The memecoin pack (MEME_PACK) counts as one coin
+    for that rule.
     `half` names a yellow flag that halves the lot (a high-vol coin).
     `pending` lists the buys already starred earlier in the same run
     ({"symbol", "usd"}); they count as bought, so two stars in one run cannot
@@ -710,19 +716,21 @@ def buy_decision(symbol, now_ts, book=None, pending=None, half=None):
         return False, str(book.get("_buys_note") or "buys paused"), 0.0
     lots = book.get("positions") or []
     extra = [p for p in pending or [] if isinstance(p, dict)]
-    max_lots = int(book.get("_max_open_lots") or DEFAULT_MAX_LOTS)
-    if len(lots) + len(extra) >= max_lots:
-        if extra:
-            return (False, f"{len(lots)} lots open + {len(extra)} starred this run, "
-                           f"max {max_lots}", 0.0)
-        return False, f"{len(lots)} lots open, max {max_lots}", 0.0
+    sym = base_symbol(symbol)
+    coins = {base_symbol(p.get("symbol")) for p in lots}
+    starred = {base_symbol(p.get("symbol")) for p in extra}
+    max_coins = int(book.get("_max_open_coins") or DEFAULT_MAX_COINS)
+    if sym not in coins and len(coins | starred) >= max_coins:
+        if starred - coins:
+            return (False, f"{len(coins)} coins held + {len(starred - coins)} starred "
+                           f"this run, max {max_coins}", 0.0)
+        return False, f"{len(coins)} coins held, max {max_coins}", 0.0
     lot = float(book.get("_lot_size_usd") or DEFAULT_LOT_USD)
     cost = (sum(float(p["qty"]) * float(p["avg_cost"]) for p in lots)
             + sum(float(p.get("usd") or 0) for p in extra))
     cap = float(book.get("_crypto_cost_cap_usd") or DEFAULT_CRYPTO_CAP_USD)
     if cost + lot > cap:
         return False, f"crypto cost ${cost:,.0f} is at the ${cap:,.0f} cap", 0.0
-    sym = base_symbol(symbol)
     if any(base_symbol(p.get("symbol")) == sym for p in extra):
         return False, "already starred this run", 0.0
     held = [p for p in lots if base_symbol(p.get("symbol")) == sym]
