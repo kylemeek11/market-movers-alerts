@@ -90,7 +90,7 @@ with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
                          {"symbol": ""}]}, f)
 coins = wl.load_watchlist(f.name)
 check("two coins, upper-cased", [c["symbol"] for c in coins] == ["LINK", "ONDO"], coins)
-check("defaults applied", coins[0]["dip_pct"] == 8.0 and coins[0]["turn_pct"] == 2.0)
+check("defaults applied", coins[0]["dip_pct"] == 15.0 and coins[0]["turn_pct"] == 3.0)
 check("override kept", coins[1]["dip_pct"] == 10.0)
 check("product derived", coins[0]["product"] == "LINK-USD")
 check("missing file -> []", wl.load_watchlist("/nonexistent.json") == [])
