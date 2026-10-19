@@ -1824,6 +1824,70 @@ def index_moves(yf):
     return out
 
 
+# Crypto breadth: the crypto version of a market-wide run. SPY/QQQ only see
+# stocks, and the rate-based too_broad() needs most coins up 3% inside an hour
+# on volume - it never saw the Oct 18 bounce, when 12 of 15 big coins rose
+# 4-7% off their 24h lows over a Sunday afternoon. This looks at the largest
+# tracked coins and asks how many are well off their 24h lows at once.
+CBREADTH_TOP_N = 30             # largest coins by market cap, Robinhood-tradable
+CBREADTH_OFF_LOW = 4.0          # a coin counts when it is this far off its 24h low
+CBREADTH_SHARE = 0.60           # ...and this share of the group counts
+CBREADTH_LEVELS = (4.0, 7.0)    # median off-low; the top level breaks DND
+CBREADTH_HISTORY = ("history (Oct 2026 study): ~45% of 4% bounces reached +10% "
+                    "off the low within 48h; ~1 in 3 fell back to the low")
+
+
+def crypto_breadth(rows):
+    """(count, total, median off-low %, leaders) for the largest coins."""
+    big = sorted((r for r in rows if r.get("low_24h") and r.get("cap")),
+                 key=lambda r: -r["cap"])[:CBREADTH_TOP_N]
+    offs = []
+    for r in big:
+        try:
+            offs.append(((r["price"] / float(r["low_24h"]) - 1) * 100, r["symbol"]))
+        except (TypeError, ValueError, ZeroDivisionError):
+            continue
+    if not offs:
+        return 0, 0, 0.0, []
+    vals = sorted(o for o, _ in offs)
+    n = len(vals)
+    median = vals[n // 2] if n % 2 else (vals[n // 2 - 1] + vals[n // 2]) / 2
+    count = sum(1 for o in vals if o >= CBREADTH_OFF_LOW)
+    leaders = sorted(offs, reverse=True)[:5]
+    return count, n, median, leaders
+
+
+def send_crypto_breadth(rows, state, now_ts, overnight=False):
+    """Push each newly crossed crypto-breadth level, once per level per day.
+
+    Overnight only the top level goes out (it breaks Do Not Disturb, like the
+    other biggest-mover alerts). Returns the number sent.
+    """
+    count, total, median, leaders = crypto_breadth(rows)
+    if total < 10 or count < CBREADTH_SHARE * total:
+        return 0
+    today = local_date(now_ts)
+    fired = state.setdefault("cbreadth_fired", [])
+    sent = 0
+    for lvl in CBREADTH_LEVELS:
+        key = f"{today}:{lvl:g}"
+        if median < lvl or key in fired:
+            continue
+        urgent = lvl == max(CBREADTH_LEVELS)
+        if overnight and not urgent:
+            continue
+        names = ", ".join(f"{sym} +{o:.1f}%" for o, sym in leaders)
+        ok = push(f"CRYPTO-WIDE RUN - {count} of {total} coins up {CBREADTH_OFF_LOW:g}%+ off lows",
+                  f"Median coin +{median:.1f}% off its 24h low (crossed +{lvl:g}%).\n"
+                  f"Leaders off low: {names}\n{CBREADTH_HISTORY}",
+                  priority="max" if urgent else "high", tags="rocket",
+                  click="https://robinhood.com/crypto/BTC")
+        if ok is not False:
+            fired.append(key)
+            sent += 1
+    return sent
+
+
 def send_index_alerts(moves, state):
     """Push each newly crossed index level. Returns the number sent."""
     fired = state.setdefault("index_fired", [])
@@ -2387,6 +2451,8 @@ def main():
         refresh_daily_context(state, crypto_rows, now_ts)
 
     # Rate of change first: it is the earliest signal, so it wins the run cap.
+    if crypto_rows:
+        send_crypto_breadth(crypto_rows, state, now_ts, overnight)
     craw, cquiet, cunknown = collect_rate(crypto_rows, marks, fired, now_ts,
                                           CRYPTO_RATE_PCT, state["cb_missing"])
     if cquiet or cunknown:
