@@ -29,6 +29,11 @@ pushes about movers raise retail risk-taking (Arnold, Pelster & Subrahmanyam,
 JFE 2022) and Robinhood users' top buys averaged -4.7% over the next 20 days
 (Barber, Huang, Odean & Schwarz, JF 2022).
 
+Mover pushes off (2026-10-19, Kyle's "fix it"): the rate, threshold, dip,
+volume and market-wide-run pushes are no longer sent at all while
+MOVER_PUSHES is False - they are logged as "[off] ..." and their bookkeeping
+still runs. See MOVER_PUSHES.
+
 Stop watch (same day): a held coin trading under the sell limit of its stop
 (5% under the stop price) gets a loud "check your stops", because a triggered
 crypto stop cannot sell below that and Robinhood may cancel it after five
@@ -420,6 +425,21 @@ QUIET_PRIORITY = "low"
 # stop checks - and the bot's own health. Everything else still goes out,
 # to the quiet feed. Set False to restore the old behaviour.
 LOUD_ONLY = True
+# Mover pushes off (2026-10-19; Kyle: "i'm losing money" / "fix it" / "yes").
+# Rate alerts, threshold crossings, dips turning up, unusual volume and the
+# market-wide run / breadth summaries are attention triggers: the pushes about
+# movers that raise retail risk-taking (Arnold, Pelster & Subrahmanyam, JFE
+# 2022), and they fire in exactly the hours the ledger's buys outside the plan
+# were made. A market-wide bounce entry is 2-3 points a trade worse than a
+# random hour in both halves of the past 14 months
+# (claude/bounce-study-2026-10-18.md); the dip push ran -10% a trade in
+# October (claude/alert-patterns-2026-10-15.md). With this False they are
+# still screened, logged ("[off] ...") and remembered (fired state, the
+# per-day tally, TOP SETUP bookkeeping), but nothing is sent, not even to the
+# quiet feed. The gold star, the overnight digest, the breakout "not a buy"
+# notes, the stop warnings, bot health and the pullback alerts are unaffected.
+# True restores them (they then follow LOUD_ONLY as before).
+MOVER_PUSHES = False
 
 # The book and the standing rules (claude/trading-strategy.md, section 0).
 POSITIONS_FILE = Path(os.environ.get("POSITIONS_FILE", "positions.json"))
@@ -513,16 +533,23 @@ def session_fraction():
 
 
 def push(title, message, priority="default", tags="chart_with_upwards_trend",
-         click=None, quiet=False, loud=False):
+         click=None, quiet=False, loud=False, mover=False):
     """Send one notification. Headers must be ASCII; the body may be UTF-8.
 
-    quiet=True sends it to the quiet feed at low priority. Returns True once
-    ntfy accepts it and False after two failed tries; a failure is counted
-    and main() then exits non-zero, so the run shows red.
+    quiet=True sends it to the quiet feed at low priority. mover=True marks a
+    push about a mover (rate, threshold, dip, volume, market-wide run): with
+    MOVER_PUSHES False it is logged and dropped, and the call returns True so
+    the caller's bookkeeping (fired state, the day's tally) stays as if it
+    had gone. Returns True once ntfy accepts it and False after two failed
+    tries; a failure is counted and main() then exits non-zero, so the run
+    shows red.
     """
     import time
     import urllib.request
 
+    if mover and not MOVER_PUSHES:
+        log(f"  [off] {title}")
+        return True
     topic = NTFY_TOPIC
     if LOUD_ONLY and not loud and tags != BUY_TAG:
         quiet = True        # Kyle, Oct 19 2026: only tested signals and gold-star buys buzz
@@ -1892,7 +1919,7 @@ def send_crypto_breadth(rows, state, now_ts, overnight=False):
                   f"Median coin +{median:.1f}% off its 24h low (crossed +{lvl:g}%).\n"
                   f"Leaders off low: {names}\n{CBREADTH_HISTORY}",
                   priority="max" if urgent else "high", tags="rocket",
-                  click="https://robinhood.com/crypto/BTC")
+                  click="https://robinhood.com/crypto/BTC", mover=True)
         if ok is not False:
             fired.append(key)
             sent += 1
@@ -1913,7 +1940,7 @@ def send_index_alerts(moves, state):
                       f"{sym} is up {pct:.1f}% on the day (crossed +{lvl:g}%). "
                       f"The whole market is moving, not one name.",
                       priority="max" if urgent else "high", tags="rocket",
-                      click=f"https://robinhood.com/stocks/{sym}")
+                      click=f"https://robinhood.com/stocks/{sym}", mover=True)
             if ok is not False:
                 fired.append(key)
                 sent += 1
@@ -1941,7 +1968,7 @@ def send_broad(kind, pending, rows, state, now_ts):
     ok = push(f"MARKET-WIDE RALLY - {label}",
               f"{len(pending)} of {len(rows)} {kind}s climbing at once. "
               f"Leaders: {names}",
-              priority="high", tags="rocket")
+              priority="high", tags="rocket", mover=True)
     if ok is not False:
         sent[kind] = today
     return ok is not False
@@ -2116,7 +2143,8 @@ def send_rate(pending, fired, now_ts, overnight, night_bar=OVERNIGHT_RATE_PCT,
                   priority=priority,
                   tags=tags,
                   click=robinhood_url(r),
-                  quiet=quiet)
+                  quiet=quiet,
+                  mover=quiet)        # a star is never a mover push
         if ok is not False:
             fired[fkey] = now_ts
             if v:
@@ -2160,7 +2188,7 @@ def send_relvol(pending, fired, now_ts, overnight):
                 priority=QUIET_PRIORITY,
                 tags="eyes",
                 click=robinhood_url(r),
-                quiet=True) is not False:
+                quiet=True, mover=True) is not False:
             fired[key] = now_ts
         log(f"  RELVOL {r['symbol']} {ratio:.1f}x on +{r['pct']:.1f}%")
 
@@ -2210,7 +2238,7 @@ def send_alerts(pending, fired, high_level, overnight, state=None, btc_price=Non
                 body,
                 priority=QUIET_PRIORITY,
                 click=robinhood_url(r),
-                quiet=True) is not False:
+                quiet=True, mover=True) is not False:
             fired[key] = level
             sent += 1
         log(f"  ALERT {r['symbol']} +{r['pct']:.1f}% "
@@ -2225,7 +2253,7 @@ def send_alerts(pending, fired, high_level, overnight, state=None, btc_price=Non
              f"{extra} more crossed a level. They'll follow shortly.",
              priority=QUIET_PRIORITY,
              tags="fire",
-             quiet=True)
+             quiet=True, mover=True)
         log(f"  {extra} queued for the next run")
 
 
@@ -2250,7 +2278,7 @@ def send_dip(coin, st, price):
     ]).strip()
     push(f"{coin['symbol']} dip turning up ({st['off_high']:.0f}% off high)",
          body, priority="default", tags="arrow_heading_up",
-         click=robinhood_url(row))
+         click=robinhood_url(row), mover=True)
     log(f"  DIP {coin['symbol']} {st['off_high']:.1f}% off 7d high, "
         f"+{st['off_low']:.1f}% off 12h low")
 
