@@ -453,6 +453,13 @@ DEFAULT_LOT_USD = 500
 DEFAULT_MAX_COINS = 10
 DEFAULT_CRYPTO_CAP_USD = 40_000
 NIGHT_DIGEST_MAX_AGE_H = 14
+# A gold star is re-sent as "still a buy" this many minutes after it went out
+# (each entry once), while the coin is still a buy and not yet in
+# positions.json. Kyle's phone never received the PEPE star of 2026-10-20
+# although ntfy had accepted it; a second, independent push covers a dropped
+# one. Stars go at ntfy's "max" priority for the same reason (2026-10-21).
+STAR_REPEAT_MIN = (10, 30)
+STAR_PRIORITY = "max"
 
 # Stop watch. A triggered Robinhood crypto stop is a market sell collared 5%
 # under the stop; past that it cannot fill and may be canceled after five
@@ -892,11 +899,84 @@ def buy_verdict(r, what, now_ts, state=None, kind="base", lines=()):
             "head": f"NOT A BUY: {note}"}
 
 
-def note_star(state, r, v):
-    """Count a sent gold star against the book for the rest of the run."""
+def note_star(state, r, v, now_ts=None, what=None):
+    """Count a sent gold star against the book for the rest of the run, and
+    remember it for the "still a buy" re-sends (send_star_repeats)."""
     if state is not None and v.get("usd"):
         state.setdefault("run_stars", []).append(
             {"symbol": base_symbol(r["symbol"]), "usd": float(v["usd"])})
+        if now_ts is not None:
+            sym = base_symbol(r["symbol"])
+            stars = [s for s in state.get("open_stars") or [] if s.get("symbol") != sym]
+            stars.append({"symbol": sym, "ts": float(now_ts), "usd": float(v["usd"]),
+                          "what": what or "base breakout", "repeats": 0})
+            state["open_stars"] = stars
+
+
+def send_star_repeats(state, rows, now_ts, btc_price=None, book=None):
+    """Re-send a gold star as STILL A BUY at STAR_REPEAT_MIN minutes after it
+    went out, once per entry, while the coin is still a buy right now (a
+    green base breakout, no red line, the book has room: morning_check) and
+    is not yet in positions.json. A coin that is bought, no longer a buy, or
+    past the last repeat is forgotten; nothing carries past 7 PM."""
+    if state is None or not state.get("open_stars"):
+        return
+    if not in_buy_window(now_ts):
+        state["open_stars"] = []
+        return
+    book = book if book is not None else load_book()
+    held = {base_symbol(p.get("symbol")) for p in (book or {}).get("positions") or []}
+    by_sym = {str(r.get("symbol") or "").upper(): r for r in rows or []}
+    keep = []
+    for s in state["open_stars"]:
+        sym = str(s.get("symbol") or "").upper()
+        n = int(s.get("repeats") or 0)
+        if sym in held:
+            log(f"  star repeat: {sym} is in the book - done")
+            continue
+        if n >= len(STAR_REPEAT_MIN):
+            continue
+        if now_ts < float(s.get("ts") or 0) + STAR_REPEAT_MIN[n] * 60:
+            keep.append(s)
+            continue
+        row = by_sym.get(sym)
+        ok, note, usd = morning_check(state, row, btc_price, now_ts,
+                                      pending=state.get("run_stars"))
+        if not ok:
+            log(f"  star repeat: {sym} no longer a buy ({note}) - let it go")
+            continue
+        local = local_at(float(s["ts"]))
+        when = local.strftime("%I:%M %p").lstrip("0") + " CT" if local else "earlier"
+        day = ""
+        try:
+            ctx = dc.coin_context((state.get("daily") or {}).get(sym), row["price"],
+                                  dc.utc_day(now_ts))
+            if ctx:
+                day = f" (+{ctx['day_pct']:.1f}% today)"
+        except Exception:
+            pass
+        breakeven, stop = cost_hints(row["price"])
+        last = n + 1 >= len(STAR_REPEAT_MIN)
+        body = [f"STILL A BUY: the gold star for {sym} went out at {when} and {sym} is not "
+                f"in positions.json. " + buy_head(note, usd),
+                f"{row.get('name') or sym}  -  {money(row['price'])}",
+                f"re-checked now: still a base breakout{day}, no red line, the book has room",
+                f"break-even {money(breakeven)}  -  {STOP_HINT_PCT:.0f}% stop {money(stop)}",
+                "Last reminder." if last else
+                f"One more reminder at {STAR_REPEAT_MIN[-1]} minutes if it is still a buy."]
+        ok_push = push(f"{sym} - BUY {note} - still a buy ({s.get('what') or 'base breakout'}), "
+                       f"star sent {when}",
+                       "\n".join(body), priority=STAR_PRIORITY, tags=BUY_TAG,
+                       click=robinhood_url(row), quiet=False)
+        if ok_push is False:
+            keep.append(s)                       # try again next run
+            continue
+        s["repeats"] = n + 1
+        log(f"  STILL A BUY {sym}: reminder {n + 1} of {len(STAR_REPEAT_MIN)}, "
+            f"star sent {when}")
+        if not last:
+            keep.append(s)
+    state["open_stars"] = keep
 
 
 def morning_check(state, row, btc_price, now_ts, pending=None):
@@ -963,11 +1043,11 @@ def send_night_digest(state, rows, now_ts, btc_price=None):
                 "re-checked now: still a base breakout, no red line, the book has room",
                 f"break-even {money(breakeven)}  -  {STOP_HINT_PCT:.0f}% stop {money(stop)}"]
         if push(f"{sym} - BUY {note} - overnight breakout, still a buy",
-                "\n".join(body), priority="high", tags=BUY_TAG,
+                "\n".join(body), priority=STAR_PRIORITY, tags=BUY_TAG,
                 click=robinhood_url(row), quiet=False) is False:
             retry.append(s)                   # try again on the next run
         else:
-            note_star(state, row, {"usd": usd})
+            note_star(state, row, {"usd": usd}, now_ts, "overnight breakout")
             bought.append(sym)
     if rest:
         title = ("Overnight setups, not a buy now: "
@@ -2325,7 +2405,7 @@ def send_breakouts(pending, fired, now_ts, overnight, state=None, btc_price=None
                         state, kind="base", lines=lines)
         lines.insert(0, v["head"])
         quiet = v["quiet"]
-        priority = QUIET_PRIORITY if quiet else ("max" if overnight else "high")
+        priority = QUIET_PRIORITY if quiet else STAR_PRIORITY
         ok = push(v["title"], "\n".join(lines),
                   priority=priority,
                   tags=v["tags"],
@@ -2333,7 +2413,7 @@ def send_breakouts(pending, fired, now_ts, overnight, state=None, btc_price=None
                   quiet=quiet)
         if ok is not False:
             fired[key] = dc.utc_day(now_ts)
-            note_star(state, r, v)
+            note_star(state, r, v, now_ts, f"base breakout +{ctx['day_pct']:.1f}% today")
         log(f"  BREAKOUT {r['symbol']} +{ctx['day_pct']:.1f}% today from a "
             f"{ctx['base14']:.0f}% base, {ctx['vs50_pct']:+.0f}% vs 50-day"
             f"{' (red lines)' if red else ''}{' quiet' if quiet else ' LOUD, gold star'}")
@@ -2540,6 +2620,13 @@ def main():
         send_night_digest(state, crypto_rows, now_ts, btc_price)
     except Exception as exc:
         log(f"  overnight digest failed ({exc}) - alerts unaffected")
+    # A gold star the phone may have missed: STILL A BUY at 10 and 30 minutes
+    # while the coin is still a buy and not in the book (2026-10-21).
+    try:
+        if not screen_down:
+            send_star_repeats(state, crypto_rows, now_ts, btc_price)
+    except Exception as exc:
+        log(f"  star repeat check failed ({exc}) - alerts unaffected")
     # Held coins under a stop's sell limit, or several at their stops.
     try:
         check_live_stops(state, now_ts)
