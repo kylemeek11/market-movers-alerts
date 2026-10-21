@@ -2,11 +2,14 @@ name: Catalyst watcher
 
 on:
   schedule:
-    # Weekly calendar: Sunday 22:00 UTC (5pm CDT), so it lands before the week
-    # rather than during it.
-    - cron: "0 22 * * 0"
-    # Daily change poll: 11:00 UTC (6am CDT) on weekdays. Trial registry
-    # updates and most pre-market 8-Ks are in by then.
+    # Backup only. Since 2026-10-21 the dispatcher (the "Market Movers
+    # dispatcher" Apps Script) starts the daily job at the first tick from
+    # 6 AM Central on weekdays and the weekly job at the first tick from 5 PM
+    # Central on Sundays, because GitHub's own cron ran this hours late or not
+    # at all. The daily cron stays as a backup: a second daily run re-alerts
+    # nothing, since the state restored from the first run already lists the
+    # filings. The weekly cron was removed: a second weekly run would send the
+    # digest twice.
     - cron: "0 11 * * 1-5"
   workflow_dispatch:
     inputs:
@@ -47,14 +50,13 @@ jobs:
           key: catalyst-state-${{ github.run_id }}
           restore-keys: catalyst-state-
 
-      # Which job: the cron that fired decides it, unless dispatched by hand.
+      # Which job: the dispatcher (or a hand run) says; a backup cron run is
+      # the daily poll.
       - name: Pick the job
         id: pick
         run: |
           if [ -n "${{ inputs.job }}" ]; then
             echo "flag=--${{ inputs.job }}" >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.event.schedule }}" = "0 22 * * 0" ]; then
-            echo "flag=--weekly" >> "$GITHUB_OUTPUT"
           else
             echo "flag=--daily" >> "$GITHUB_OUTPUT"
           fi
