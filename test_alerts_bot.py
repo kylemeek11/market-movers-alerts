@@ -1060,12 +1060,17 @@ try:
     st = gstate()
     ab.send_breakouts([("base:crypto:GRT", dict(grt), base_ctx)], {}, TUE_NOON, False, state=st)
     title, body, kw = sent[-1]
-    check("noon BASE BREAKOUT, room in the book: the gold star, loud, BUY in the title",
-          kw.get("tags") == "star" and kw.get("quiet") is False and kw.get("priority") == "high"
+    check("noon BASE BREAKOUT, room in the book: the gold star, loud, max priority, BUY in the title",
+          kw.get("tags") == "star" and kw.get("quiet") is False and kw.get("priority") == "max"
           and title == "GRT - BUY $500 lot - base breakout +5.4% today"
           and body.startswith("BUY NOW: $500 lot, then the 15% stop"), (title, body, kw))
     check("...and it counts against the book for the rest of the run",
           st.get("run_stars") == [{"symbol": "GRT", "usd": 500.0}], st.get("run_stars"))
+    check("...and is remembered for the still-a-buy reminders (2026-10-21)",
+          st.get("open_stars") == [{"symbol": "GRT", "ts": TUE_NOON, "usd": 500.0,
+                                    "what": "base breakout +5.4% today", "repeats": 0}],
+          st.get("open_stars"))
+    star_state = st
     ab.load_book = lambda: dict(OPEN_BOOK, positions=[lot("GRT", 17000, 0.0250, 0.0262)])
     sent.clear()
     ab.send_breakouts([("base:crypto:GRT", dict(grt), base_ctx)], {}, TUE_NOON, False, state=gstate())
@@ -1120,14 +1125,17 @@ try:
     sent.clear()
     ab.send_night_digest(st, [dict(grt, price=0.0300)], TUE_7AM)
     title, body, kw = sent[-1] if sent else ("", "", {})
-    check("7 AM, still a base breakout and room in the book: its own gold star, loud",
+    check("7 AM, still a base breakout and room in the book: its own gold star, loud, max priority",
           len(sent) == 1 and kw.get("tags") == "star" and kw.get("quiet") is False
-          and kw.get("priority") == "high" and kw.get("click") == "https://robinhood.com/crypto/GRT"
+          and kw.get("priority") == "max" and kw.get("click") == "https://robinhood.com/crypto/GRT"
           and title == "GRT - BUY $500 lot - overnight breakout, still a buy"
           and body.startswith("BUY NOW: $500 lot") and "+1.7%" in body, (title, body, kw))
     check("...the list is cleared and the star counts for the run",
           st["night_stars"] == [] and st.get("run_stars") == [{"symbol": "GRT", "usd": 500.0}],
           (st["night_stars"], st.get("run_stars")))
+    check("...and the 7 AM star is remembered for the reminders too",
+          [(s["symbol"], s["ts"], s["what"], s["repeats"]) for s in st.get("open_stars", [])]
+          == [("GRT", TUE_7AM, "overnight breakout", 0)], st.get("open_stars"))
     night = [{"symbol": "GRT", "what": "base breakout +5.4% today", "kind": "base",
               "price": 0.0295, "ts": MON_9PM}]
     sent.clear()
@@ -1170,6 +1178,70 @@ try:
     ab.push = capture
     check("a gold star that fails to send is kept for the next run and not counted",
           [s["symbol"] for s in st["night_stars"]] == ["GRT"] and not st.get("run_stars"), st)
+    sent.clear()
+
+    # STILL A BUY reminders (2026-10-21): a star the phone may have dropped is
+    # re-sent at 10 and 30 minutes while the coin is still a buy and not held.
+    MIN = 60.0
+    ab.load_book = lambda: OPEN_BOOK
+    st = dict(star_state, run_stars=[], open_stars=[dict(s) for s in star_state["open_stars"]])
+    ab.send_star_repeats(st, [dict(grt)], TUE_NOON + 5 * MIN)
+    check("five minutes after the star: nothing yet, the star is kept",
+          sent == [] and [s["repeats"] for s in st["open_stars"]] == [0], (sent, st["open_stars"]))
+    ab.send_star_repeats(st, [dict(grt)], TUE_NOON + 10 * MIN)
+    title, body, kw = sent[-1] if sent else ("", "", {})
+    check("ten minutes after: STILL A BUY, loud, max priority, the star tag, tap-through",
+          len(sent) == 1 and kw.get("tags") == "star" and kw.get("quiet") is False
+          and kw.get("priority") == "max" and kw.get("click") == "https://robinhood.com/crypto/GRT"
+          and title == "GRT - BUY $500 lot - still a buy (base breakout +5.4% today), star sent 12:00 PM CT"
+          and body.startswith("STILL A BUY: the gold star for GRT went out at 12:00 PM CT and GRT is "
+                              "not in positions.json. BUY NOW: $500 lot")
+          and "re-checked now: still a base breakout (+5.4% today), no red line" in body
+          and body.endswith("One more reminder at 30 minutes if it is still a buy."), (title, body, kw))
+    check("...counted once, kept for the second reminder, not counted as a new star",
+          [s["repeats"] for s in st["open_stars"]] == [1] and st.get("run_stars") == [],
+          (st["open_stars"], st.get("run_stars")))
+    sent.clear()
+    ab.send_star_repeats(st, [dict(grt)], TUE_NOON + 20 * MIN)
+    check("twenty minutes: nothing (the second reminder is at thirty)", sent == [], sent)
+    ab.send_star_repeats(st, [dict(grt)], TUE_NOON + 30 * MIN)
+    title, body, kw = sent[-1] if sent else ("", "", {})
+    check("thirty minutes: the last reminder, then the star is forgotten",
+          len(sent) == 1 and title.startswith("GRT - BUY $500 lot - still a buy")
+          and body.endswith("Last reminder.") and st["open_stars"] == [], (title, body, st["open_stars"]))
+    sent.clear()
+    ab.send_star_repeats(st, [dict(grt)], TUE_NOON + 40 * MIN)
+    check("...and nothing after that", sent == [], sent)
+    st = dict(star_state, run_stars=[], open_stars=[dict(s) for s in star_state["open_stars"]])
+    ab.load_book = lambda: dict(OPEN_BOOK, positions=[lot("GRT", 17000, 0.0295, None, bought="2026-10-20")])
+    ab.send_star_repeats(st, [dict(grt)], TUE_NOON + 10 * MIN)
+    check("bought (GRT is in positions.json): no reminder, the star is forgotten",
+          sent == [] and st["open_stars"] == [], (sent, st["open_stars"]))
+    ab.load_book = lambda: OPEN_BOOK
+    st = dict(star_state, run_stars=[], open_stars=[dict(s) for s in star_state["open_stars"]])
+    ab.send_star_repeats(st, [dict(grt, price=0.0285)], TUE_NOON + 10 * MIN)      # +1.8% today
+    check("no longer a breakout (faded under +5%): no reminder, the star is let go",
+          sent == [] and st["open_stars"] == [], (sent, st["open_stars"]))
+    st = dict(star_state, run_stars=[], open_stars=[dict(s) for s in star_state["open_stars"]])
+    ab.send_star_repeats(st, [dict(grt)], TUE_NOON + 10 * MIN, btc_price=85500.0)
+    st2 = dict(star_state, run_stars=[], open_stars=[dict(s) for s in star_state["open_stars"]])
+    st2["daily"]["BTC"] = {"d": uday, "prev_close": 90000.0, "base14": 5.0, "avg50": 88000.0,
+                           "high30": 92000.0, "close3": 89000.0, "vol30": 2.0, "days": [0.4, -0.2, 0.1]}
+    sent.clear()
+    ab.send_star_repeats(st2, [dict(grt)], TUE_NOON + 10 * MIN, btc_price=85500.0)
+    check("a red line since the star (BTC -5% on the day): no reminder, the star is let go",
+          sent == [] and st2["open_stars"] == [], (sent, st2["open_stars"]))
+    st = dict(star_state, run_stars=[], open_stars=[dict(s) for s in star_state["open_stars"]])
+    TUE_8PM = datetime(2026, 10, 21, 1, 0, tzinfo=timezone.utc).timestamp()         # 8 PM CDT Tue
+    ab.send_star_repeats(st, [dict(grt)], TUE_8PM)
+    check("after 7 PM: no reminder and nothing carried into the evening",
+          sent == [] and st["open_stars"] == [], (sent, st["open_stars"]))
+    st = dict(star_state, run_stars=[], open_stars=[dict(s) for s in star_state["open_stars"]])
+    ab.push = lambda title, message, **k: False
+    ab.send_star_repeats(st, [dict(grt)], TUE_NOON + 10 * MIN)
+    ab.push = capture
+    check("a reminder that fails to send is tried again next run",
+          [s["repeats"] for s in st["open_stars"]] == [0], st["open_stars"])
     sent.clear()
     # The default since 2026-10-16: a TOP SETUP is an alert only.
     ab.TOP_SETUP_IS_BUY = False
