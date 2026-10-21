@@ -349,7 +349,7 @@ check("not on Bitstamp -> market-maker routing line", "market-maker routing only
 check("stop hint present", "15% stop" in body)
 check("1st alert today tag", "1st alert today" in body)
 check("fired once for the day", fired.get("base:crypto:HYPE") == dc.utc_day(NOW))
-check("high priority in daytime", kw.get("priority") == "high" and kw.get("tags") == "star")
+check("max priority on a gold star (2026-10-21)", kw.get("priority") == "max" and kw.get("tags") == "star")
 SENT.clear()
 ab.run_breakouts([hype], fired, NOW, False, state, {}, 85500.0)
 check("no repeat the same day", SENT == [])
