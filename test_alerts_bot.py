@@ -1302,6 +1302,228 @@ try:
 finally:
     ab.push = real_push
 
+print("\nVenue watch (2026-10-25): Robinhood trouble is loud while lots are held")
+sent = []
+real_push = ab.push
+ab.push = lambda title, message, **k: sent.append((title, message, k))
+
+
+def page(indicator="none", description="All Systems Operational", incidents=(), components=None):
+    """A status page as status_page() reduces it."""
+    return {"indicator": indicator, "description": description,
+            "incidents": [dict(i) for i in incidents], "components": dict(components or {})}
+
+
+def incident(id_, name, status="investigating", impact="minor"):
+    return {"id": id_, "name": name, "status": status, "impact": impact}
+
+
+def pages(**by_venue):
+    """fetch=... for check_venues: the page for each venue's base URL."""
+    clean = {"Robinhood": page(), "Coinbase": page("minor", "Partially Degraded Service",
+                                                  [incident("j4tj", "Delayed Withdrawals - Interac e-Transfer")],
+                                                  {"Trading": "operational", "Coinbase - API": "operational",
+                                                   "Interac (Canada)": "degraded_performance"})}
+    clean.update(by_venue)
+    by_base = {base: clean[v] for v, base in ab.STATUS_PAGES.items()}
+    return lambda base: by_base[base]
+
+
+def loud_pushes():
+    return [(t, m, k) for t, m, k in sent if k.get("loud") is True]
+
+
+try:
+    held = {"positions": [lot("XTZ", 1600, 0.3236375, 0.272), lot("DOT", 500, 1.08622, 0.9046),
+                          lot("LINK#3", 25, 12.8, 10.78), lot("LINK#4", 200, 13.09, 11.02)]}
+    # The shape both pages had on 2026-10-25: nothing to say.
+    check("venue_problems: a clean Robinhood page and Coinbase's everyday minor incidents -> nothing",
+          ab.venue_problems("Robinhood", page()) == []
+          and ab.venue_problems("Coinbase", pages()(ab.STATUS_PAGES["Coinbase"])) == [])
+    st = {}
+    ab.check_venues(st, NOON_CT, book=held, fetch=pages())
+    check("both pages quiet: no push, nothing remembered", sent == [] and st.get("venue") == {}, sent)
+    # A crypto-trading incident while lots are held.
+    trouble = pages(Robinhood=page("minor", "Partially Degraded Service",
+                                   [incident("abc123", "Crypto trading delays")]))
+    ab.check_venues(st, NOON_CT, book=held, fetch=trouble)
+    check("Robinhood 'Crypto trading delays' while held -> one loud push at max",
+          len(sent) == 1 and sent[0][0] == "ROBINHOOD STATUS: Crypto trading delays (investigating, impact minor)"
+          and sent[0][2].get("priority") == "max" and sent[0][2].get("loud") is True
+          and sent[0][2].get("click") == "https://status.robinhood.com", sent)
+    check("...naming what is held and what to do",
+          "You hold 4 lots on 3 coins: DOT, LINK, XTZ." in sent[0][1]
+          and "check that each stop is still open" in sent[0][1], sent[0][1])
+    check("...and remembered as loud", st["venue"]["Robinhood:incident:abc123"]["loud"] is True, st["venue"])
+    sent.clear()
+    ab.check_venues(st, NOON_CT + 3600, book=held, fetch=trouble)
+    check("an hour later, still listed: no repeat", sent == [], sent)
+    ab.check_venues(st, NOON_CT + 7 * 3600, book=held, fetch=trouble)
+    check("seven hours later, still listed: said again", len(loud_pushes()) == 1, sent)
+    sent.clear()
+    ab.check_venues(st, NOON_CT + 8 * 3600, book=held, fetch=pages())
+    check("incident gone: one quiet 'cleared' note and the memory dropped",
+          len(sent) == 1 and sent[0][0].startswith("Robinhood status: cleared - Crypto trading delays")
+          and sent[0][2].get("quiet") is True and st["venue"] == {}, sent)
+    sent.clear()
+    # The indicator alone (a system-wide outage has no incident yet).
+    ab.check_venues({}, NOON_CT, book=held, fetch=pages(Robinhood=page("major", "Partial System Outage")))
+    check("a major indicator with no incident listed -> loud",
+          len(sent) == 1 and sent[0][0] == "ROBINHOOD STATUS: status page: Partial System Outage"
+          and sent[0][2].get("loud") is True, sent)
+    sent.clear()
+    # A Robinhood incident that is not about trading, and a serious one with nothing held.
+    ab.check_venues({}, NOON_CT, book=held, fetch=pages(Robinhood=page("minor", "Partially Degraded Service",
+                                                                      [incident("d1", "Delays in bank transfers")])))
+    check("'Delays in bank transfers' while held -> quiet feed",
+          len(sent) == 1 and sent[0][0] == "Robinhood status: Delays in bank transfers (investigating, impact minor)"
+          and sent[0][2].get("quiet") is True and not loud_pushes(), sent)
+    sent.clear()
+    ab.check_venues({}, NOON_CT, book={"positions": []}, fetch=trouble)
+    check("a trading incident with nothing held -> quiet feed, and it says so",
+          len(sent) == 1 and sent[0][2].get("quiet") is True and "Nothing is held" in sent[0][1], sent)
+    sent.clear()
+    ab.check_venues({}, NOON_CT, book=held, fetch=pages(Robinhood=page("minor", "Partially Degraded Service",
+                                                                      [incident("m1", "Delays in bank transfers", impact="major")])))
+    check("an incident Robinhood itself rates major -> loud whatever its name",
+          len(loud_pushes()) == 1, sent)
+    sent.clear()
+    # Coinbase: the bot's price source. Quiet, and only the trading/API components or a major incident.
+    cb = pages(Coinbase=page("minor", "Partially Degraded Service",
+                             [incident("j4tj", "Delayed Withdrawals - Interac e-Transfer")],
+                             {"Trading": "partial_outage", "Coinbase - API": "operational"}))
+    ab.check_venues({}, NOON_CT, book=held, fetch=cb)
+    check("Coinbase Trading partial_outage -> one quiet note about stale prices",
+          len(sent) == 1 and sent[0][0] == "Coinbase status: Trading: partial outage"
+          and sent[0][2].get("quiet") is True and "stale or missing prices" in sent[0][1], sent)
+    sent.clear()
+    ab.check_venues({}, NOON_CT, book=held,
+                    fetch=pages(Coinbase=page("major", "Partial System Outage",
+                                              [incident("x9", "Degraded performance - Advanced Trade", impact="major")],
+                                              {"Trading": "operational"})))
+    check("a major Coinbase incident -> quiet notes, never loud",
+          len(sent) == 2 and not loud_pushes() and all(k.get("quiet") for _, _, k in sent), sent)
+    sent.clear()
+    # A page that cannot be read: nothing sent, nothing cleared.
+    remembered = {"venue": {"Robinhood:incident:abc123": {"t": NOON_CT - 7200, "what": "x", "loud": True}}}
+
+    def flaky(base):
+        if "robinhood" in base:
+            raise OSError("status page down")
+        return pages()(base)
+
+    ab.check_venues(remembered, NOON_CT, book=held, fetch=flaky)
+    check("Robinhood page unreadable: no push, no crash, and the open item is not marked cleared",
+          sent == [] and "Robinhood:incident:abc123" in remembered["venue"], (sent, remembered))
+    ab.check_venues(None, NOON_CT, book=held, fetch=trouble)
+    check("no state: nothing", sent == [])
+    # status_page() reduces the raw Statuspage JSON (shapes from 2026-10-25).
+    raw = {"/api/v2/status.json": {"status": {"indicator": "minor", "description": "Partially Degraded Service"}},
+           "/api/v2/incidents/unresolved.json": {"incidents": [
+               {"id": "j4tjnbxsw12l", "name": "Delayed Withdrawals - Interac e-Transfer",
+                "status": "investigating", "impact": "minor", "created_at": "2026-10-25T00:23:25.335-07:00"}]},
+           "/api/v2/components.json": {"components": [{"name": "Trading", "status": "operational"},
+                                                      {"name": "Interac (Canada)", "status": "degraded_performance"}]}}
+    real_fetch_json = ab.fetch_json
+    ab.fetch_json = lambda url, timeout=6: raw[url.replace("https://status.coinbase.com", "")]
+    try:
+        reduced = ab.status_page("https://status.coinbase.com")
+    finally:
+        ab.fetch_json = real_fetch_json
+    check("status_page keeps indicator, description, incidents and component states",
+          reduced == {"indicator": "minor", "description": "Partially Degraded Service",
+                      "incidents": [{"id": "j4tjnbxsw12l", "name": "Delayed Withdrawals - Interac e-Transfer",
+                                     "status": "investigating", "impact": "minor"}],
+                      "components": {"Trading": "operational", "Interac (Canada)": "degraded_performance"}},
+          reduced)
+finally:
+    ab.push = real_push
+
+print("\nPeg watch (2026-10-25): USDC or USDT off the dollar")
+sent = []
+real_push = ab.push
+ab.push = lambda title, message, **k: sent.append((title, message, k))
+try:
+    st = {}
+    ab.check_pegs(st, NOON_CT, prices={"USDC": 0.9998, "USDT": 0.99865})
+    check("both at the peg (Kraken, 2026-10-25): nothing", sent == [] and st.get("pegs") == {}, sent)
+    ab.check_pegs(st, NOON_CT, prices={"USDC": 0.9998, "USDT": 0.9940})
+    check("USDT at 0.9940 -> one loud DEPEG push at max",
+          len(sent) == 1 and sent[0][0] == "DEPEG: USDT $0.9940, 0.60% under $1"
+          and sent[0][2].get("priority") == "max" and sent[0][2].get("loud") is True, sent)
+    check("...that calls itself information and names the research",
+          "Information, not a trade" in sent[0][1] and "Perez Riaza & Gnabo 2025" in sent[0][1]
+          and "frozen until the Nov 5 review" in sent[0][1], sent[0][1])
+    check("...and the episode is remembered with its gap",
+          st["pegs"]["USDT"]["sent"] == NOON_CT and abs(st["pegs"]["USDT"]["gap"] - 0.6) < 1e-9, st["pegs"])
+    sent.clear()
+    ab.check_pegs(st, NOON_CT + 3600, prices={"USDC": 0.9998, "USDT": 0.9945})
+    check("an hour later, still 0.55% off: no repeat", sent == [], sent)
+    ab.check_pegs(st, NOON_CT + 3600, prices={"USDC": 0.9998, "USDT": 0.9880})
+    check("widened to 1.20% off: said again", len(sent) == 1 and sent[0][0] == "DEPEG: USDT $0.9880, 1.20% under $1", sent)
+    sent.clear()
+    ab.check_pegs(st, NOON_CT + 3600 + 7 * 3600, prices={"USDC": 0.9998, "USDT": 0.9880})
+    check("seven hours on, unchanged: said again", len(sent) == 1, sent)
+    sent.clear()
+    ab.check_pegs(st, NOON_CT + 9 * 3600, prices={"USDC": 0.9998, "USDT": 0.9970})
+    check("back to 0.30% off: nothing yet, episode kept", sent == [] and "USDT" in st["pegs"], sent)
+    ab.check_pegs(st, NOON_CT + 10 * 3600, prices={"USDC": 0.9998, "USDT": 0.9990})
+    check("back within 0.2%: one quiet 'back at peg' note, episode closed",
+          len(sent) == 1 and sent[0][0] == "USDT back at peg: $0.9990" and sent[0][2].get("quiet") is True
+          and "10.0 hours" in sent[0][1] and st["pegs"] == {}, sent)
+    sent.clear()
+    ab.check_pegs(st, NOON_CT, prices={"USDC": 1.0060, "USDT": 0.9998})
+    check("USDC over the dollar is named as such", len(sent) == 1 and sent[0][0] == "DEPEG: USDC $1.0060, 0.60% over $1", sent)
+    sent.clear()
+    ab.check_pegs({}, NOON_CT, prices={"USDC": 0.9998})
+    check("a missing coin is skipped, not a crash", sent == [])
+    real_peg_prices = ab.peg_prices
+    ab.peg_prices = lambda timeout=6: (_ for _ in ()).throw(OSError("kraken down"))
+    try:
+        ab.check_pegs({}, NOON_CT)
+    finally:
+        ab.peg_prices = real_peg_prices
+    check("Kraken unreachable: nothing sent, no crash", sent == [])
+    ab.check_pegs(None, NOON_CT, prices={"USDT": 0.90})
+    check("no state: nothing", sent == [])
+    # peg_prices parses Kraken's reply (keys as seen 2026-10-25: USDCUSD, USDTZUSD).
+    kraken = {"error": [], "result": {"USDCUSD": {"a": ["0.99980000", "1604024", "1604024.000"], "c": ["0.99970000", "102.00000000"]},
+                                      "USDTZUSD": {"a": ["0.99870000", "1", "1.000"], "c": ["0.99865000", "36.79579734"]},
+                                      "XXBTZUSD": {"c": ["65000.0", "0.1"]}}}
+    real_fetch_json = ab.fetch_json
+    ab.fetch_json = lambda url, timeout=6: kraken
+    try:
+        got = ab.peg_prices()
+        ab.fetch_json = lambda url, timeout=6: {"error": ["EQuery:Unknown asset pair"], "result": {}}
+        try:
+            ab.peg_prices()
+            err = None
+        except ValueError as exc:
+            err = str(exc)
+    finally:
+        ab.fetch_json = real_fetch_json
+    check("peg_prices reads the last trade of each stablecoin pair and ignores the rest",
+          got == {"USDC": 0.9997, "USDT": 0.99865}, got)
+    check("...and a Kraken error is raised, not read as a price", err == "EQuery:Unknown asset pair", err)
+finally:
+    ab.push = real_push
+
+# The venue and peg memories survive the daily reset, like pullback_sent.
+tmp = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+json.dump({"date": "2000-01-01", "fired": {}, "marks": {},
+           "venue": {"Robinhood:incident:abc123": {"t": 1.0, "what": "x", "loud": True}},
+           "pegs": {"USDT": {"since": 1.0, "sent": 1.0, "gap": 0.6}}}, tmp)
+tmp.close()
+saved_path = ab.STATE_FILE
+ab.STATE_FILE = ab.Path(tmp.name)
+try:
+    fresh = ab.load_state()
+finally:
+    ab.STATE_FILE = saved_path
+    os.unlink(tmp.name)
+check("a new day keeps the open venue items and peg episodes",
+      "Robinhood:incident:abc123" in fresh.get("venue", {}) and "USDT" in fresh.get("pegs", {}), fresh)
+
 print("\nPushes: two tries, failures counted, quiet topic")
 import urllib.request as _ur
 import time as _time
