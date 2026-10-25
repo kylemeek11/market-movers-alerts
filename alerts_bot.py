@@ -38,6 +38,16 @@ Stop watch (same day): a held coin trading under the sell limit of its stop
 (5% under the stop price) gets a loud "check your stops", because a triggered
 crypto stop cannot sell below that and Robinhood may cancel it after five
 minutes. A failed push is tried twice and the run exits non-zero.
+
+Venue and peg watch (2026-10-25, rulebook section 9 "News and events"): the
+two kinds of news with a measured, immediate effect that a stop cannot see
+coming. Robinhood's status page reporting trouble with trading while lots are
+held is a loud push (a stop is only protection while the venue can trade);
+Coinbase trouble is a quiet note (the bot's prices come from there). USDC or
+USDT 0.5% or more off the dollar on Kraken is a loud push: a USDT depeg
+raises bitcoin's five-minute jump odds about fivefold (Perez Riaza & Gnabo
+2025). Both are information for Kyle, not rules: the entry, exit and sizing
+rules are frozen until the Nov 5 review.
 """
 
 from __future__ import annotations
@@ -468,6 +478,45 @@ COLLAR_PCT = 5.0
 COLLAR_MARGIN_PCT = 1.0     # Coinbase vs Robinhood quote gap
 CRASH_MIN_COINS = 3
 STOP_WATCH_COOLDOWN_SEC = 6 * 3600
+
+# Venue watch (2026-10-25, rulebook section 9). A stop is only protection
+# while the venue can trade, and Robinhood's own status page is the earliest
+# public word that it cannot. Both pages are Atlassian Statuspage sites:
+# /api/v2/status.json gives an overall indicator (none, minor, major,
+# critical), /api/v2/incidents/unresolved.json the open incidents, and
+# /api/v2/components.json per-component states (empty on Robinhood's page;
+# Coinbase's has about 180, the ones that matter here named below).
+# Robinhood: a major/critical indicator, or an open incident whose name has
+# one of VENUE_WORDS in it, is a max-priority push while positions.json holds
+# any lot - once per incident, again every VENUE_COOLDOWN_SEC while it stays
+# open, and a quiet note when it clears; other Robinhood incidents, and
+# anything while nothing is held, go to the quiet feed. Coinbase is where the
+# bot's prices and the stop checks come from, so a non-operational trading or
+# API component, or a major incident, is a quiet note: it means the bot may be
+# working from stale prices, not that Kyle's orders are at risk. A status
+# page that cannot be read is logged and nothing more - that is not a venue
+# outage.
+STATUS_PAGES = {"Robinhood": "https://status.robinhood.com",
+                "Coinbase": "https://status.coinbase.com"}
+VENUE_WORDS = ("crypto", "trading", "trade", "order", "stop", "outage")
+COINBASE_COMPONENTS = ("Trading", "Coinbase - Advanced Trade", "Coinbase - API")
+VENUE_COOLDOWN_SEC = 6 * 3600
+
+# Peg watch (2026-10-25, rulebook section 9). A stablecoin depeg is the one
+# kind of news with a measured, immediate effect on bitcoin: a USDT move past
+# 0.5% from $1 raises the odds of a BTC jump in the next five minutes about
+# fivefold (Perez Riaza & Gnabo 2025, J. Int. Money & Finance). Information,
+# not a rule - the red lines are frozen until the Nov 5 review - so the push
+# says what it is and what to check. USDC and USDT are priced on Kraken's USD
+# pairs (deep USD markets for both; Coinbase has no USDC-USD product, checked
+# 2026-10-25). A coin DEPEG_PCT or more off the dollar is a max-priority push
+# once per episode, again if the gap widens by another DEPEG_PCT or after
+# DEPEG_COOLDOWN_SEC, and a quiet note once it is back within REPEG_PCT.
+PEG_URL = "https://api.kraken.com/0/public/Ticker?pair=USDCUSD,USDTUSD"
+PEG_COINS = ("USDC", "USDT")
+DEPEG_PCT = 0.5
+REPEG_PCT = 0.2
+DEPEG_COOLDOWN_SEC = 6 * 3600
 
 PUSH_RETRY_WAIT_S = 3
 PUSH_STATS = {"failed": 0}
@@ -1140,6 +1189,246 @@ def check_live_stops(state, now_ts, book=None, price_of=None):
         log(f"  CRASH CHECK {len(coins)} coins at their stops: {', '.join(coins)}")
 
 
+# --- Venue status and stablecoin pegs (2026-10-25) --------------------------
+
+def fetch_json(url, timeout=6):
+    """One JSON document over HTTPS, or the exception."""
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "market-movers-alerts/1.0"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def status_page(base, timeout=6):
+    """A Statuspage-hosted status page, reduced to what the venue watch needs:
+    {"indicator", "description", "incidents": [{id, name, status, impact}],
+    "components": {name: status}}. Raises if the overall status or the open
+    incidents cannot be read; a missing component list is just empty."""
+    status = fetch_json(f"{base}/api/v2/status.json", timeout)
+    unresolved = fetch_json(f"{base}/api/v2/incidents/unresolved.json", timeout)
+    try:
+        comps = fetch_json(f"{base}/api/v2/components.json", timeout)
+    except Exception:
+        comps = {}
+    st = status.get("status") or {}
+    return {
+        "indicator": str(st.get("indicator") or "none").lower(),
+        "description": str(st.get("description") or ""),
+        "incidents": [{"id": str(i.get("id") or i.get("shortlink") or i.get("name") or ""),
+                       "name": str(i.get("name") or ""),
+                       "status": str(i.get("status") or ""),
+                       "impact": str(i.get("impact") or "").lower()}
+                      for i in (unresolved.get("incidents") or [])],
+        "components": {str(c.get("name") or ""): str(c.get("status") or "").lower()
+                       for c in (comps.get("components") or [])},
+    }
+
+
+def venue_problems(venue, page):
+    """What on one status page deserves a word: [(key, what, serious)].
+
+    serious marks the Robinhood items that buzz while lots are held - a
+    major or critical indicator, or an open incident about crypto, trading,
+    orders, stops or an outage (VENUE_WORDS), or one Robinhood itself rates
+    major or critical. Other Robinhood incidents are listed as quiet. On
+    Coinbase only the trading and API components (COINBASE_COMPONENTS) and
+    major incidents count, all quiet: Coinbase's page carries a few minor
+    incidents most days (payment rails, one chain's sends) that mean nothing
+    here.
+    """
+    out = []
+    ind = page.get("indicator") or "none"
+    bad = ind in ("major", "critical")
+    if venue == "Robinhood":
+        if bad:
+            out.append(("indicator", f"status page: {page.get('description') or ind}", True))
+        for inc in page.get("incidents") or []:
+            name = inc.get("name") or ""
+            hot = (any(w in name.lower() for w in VENUE_WORDS)
+                   or inc.get("impact") in ("major", "critical"))
+            out.append((f"incident:{inc.get('id')}",
+                        f"{name} ({inc.get('status') or '?'}, impact {inc.get('impact') or '?'})",
+                        hot))
+        return out
+    comps = page.get("components") or {}
+    for name in COINBASE_COMPONENTS:
+        st = comps.get(name)
+        if st and st != "operational":
+            out.append((f"component:{name}", f"{name}: {st.replace('_', ' ')}", False))
+    for inc in page.get("incidents") or []:
+        if inc.get("impact") in ("major", "critical"):
+            out.append((f"incident:{inc.get('id')}",
+                        f"{inc.get('name')} ({inc.get('status') or '?'}, impact {inc.get('impact')})",
+                        False))
+    if bad:
+        out.append(("indicator", f"status page: {page.get('description') or ind}", False))
+    return out
+
+
+def check_venues(state, now_ts, book=None, fetch=None):
+    """Venue watch (2026-10-25): a loud push when Robinhood's status page
+    reports trouble with trading while lots are held.
+
+    Every run reads STATUS_PAGES. A serious Robinhood item (venue_problems)
+    is a max-priority push while positions.json holds any lot, once per
+    item and again every VENUE_COOLDOWN_SEC while it stays listed, with a
+    quiet note when it clears; everything else that qualifies goes to the
+    quiet feed on the same cadence. state["venue"] remembers what has been
+    said, keyed by venue and incident, and survives the daily reset. A page
+    that cannot be read is logged and skipped - a status page outage is not
+    a venue outage, and nothing is marked cleared on a failed read.
+    """
+    if state is None:
+        return
+    book = book if book is not None else load_book()
+    lots = (book or {}).get("positions") or []
+    coins = sorted({base_symbol(p.get("symbol")) for p in lots if p.get("symbol")})
+    fetch = fetch or status_page
+    seen = state.setdefault("venue", {})
+    summary = []
+    for venue, base in STATUS_PAGES.items():
+        try:
+            page = fetch(base)
+        except Exception as exc:
+            log(f"  venue watch: {venue} status page unreadable ({exc})")
+            summary.append(f"{venue} unreadable")
+            continue
+        problems = venue_problems(venue, page)
+        summary.append(f"{venue} {page.get('indicator') or 'none'}"
+                       + (f" ({len(problems)} to note)" if problems else ""))
+        live_keys = {f"{venue}:{k}" for k, _, _ in problems}
+        for key in [k for k in list(seen) if k.startswith(venue + ":") and k not in live_keys]:
+            prev = seen.pop(key)
+            what = prev.get("what") if isinstance(prev, dict) else key
+            if isinstance(prev, dict) and prev.get("loud"):
+                push(f"{venue} status: cleared - {what}",
+                     f"{venue}'s status page no longer lists it. Check that each stop "
+                     f"you hold is still open and at its price: an order touched during "
+                     f"the incident may have filled or been canceled.",
+                     tags="white_check_mark", click=base, quiet=True)
+            log(f"  VENUE {venue} cleared: {what}")
+        for k, what, serious in problems:
+            key = f"{venue}:{k}"
+            prev = seen.get(key) or {}
+            if now_ts - float(prev.get("t") or 0) < VENUE_COOLDOWN_SEC:
+                continue
+            loud = bool(serious and lots)
+            if loud:
+                body = [f"Robinhood reports: {what}",
+                        f"Status page: {page.get('description') or page.get('indicator')}",
+                        f"You hold {len(lots)} lot{'s' if len(lots) != 1 else ''} on "
+                        f"{len(coins)} coin{'s' if len(coins) != 1 else ''}: {', '.join(coins)}.",
+                        "A stop is only protection while Robinhood can trade. As soon as the "
+                        "app works: check that each stop is still open and at its price, and "
+                        "report any fill or cancel so the records match. A gold star during "
+                        "an outage cannot be filled or protected - let it go.",
+                        f"Repeats every {VENUE_COOLDOWN_SEC // 3600} hours while it stays open."]
+                ok = push(f"ROBINHOOD STATUS: {what}", "\n".join(body), priority="max",
+                          tags="rotating_light", click=base, loud=True)
+            elif venue == "Robinhood":
+                ok = push(f"Robinhood status: {what}",
+                          f"Robinhood's status page lists: {what}. "
+                          + ("Nothing is held, so this is for information."
+                             if not lots else
+                             "Not about trading as far as the name says; stops are unaffected "
+                             "unless the app itself is down."),
+                          tags="warning", click=base, quiet=True)
+            else:
+                ok = push(f"Coinbase status: {what}",
+                          f"Coinbase's status page lists: {what}. The bot's prices and the "
+                          f"stop checks come from Coinbase, so until it clears, stop raises "
+                          f"and the stop watch may be working from stale or missing prices. "
+                          f"Robinhood itself is not affected by this.",
+                          tags="warning", click=base, quiet=True)
+            if ok is not False:
+                seen[key] = {"t": now_ts, "what": what, "loud": loud}
+            log(f"  VENUE {venue} {'LOUD' if loud else 'quiet'}: {what}")
+    if summary:
+        log("  venues: " + ", ".join(summary))
+
+
+def peg_prices(timeout=6):
+    """{"USDC": price, "USDT": price} from Kraken's USD pairs; a coin the reply
+    lacks is simply missing. Kraken keys the pairs USDCUSD and USDTZUSD
+    (checked 2026-10-25): the first four letters name the coin, and "c" is
+    the last trade as [price, size]."""
+    data = fetch_json(PEG_URL, timeout)
+    if data.get("error"):
+        raise ValueError("; ".join(str(e) for e in data["error"]))
+    out = {}
+    for pair, tick in (data.get("result") or {}).items():
+        coin = str(pair)[:4].upper()
+        if coin not in PEG_COINS:
+            continue
+        try:
+            px = float((tick.get("c") or [0])[0])
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if px > 0:
+            out[coin] = px
+    return out
+
+
+def check_pegs(state, now_ts, prices=None):
+    """Peg watch (2026-10-25): a loud push when USDC or USDT trades DEPEG_PCT
+    or more off the dollar.
+
+    Once per episode at max priority, again if the gap has widened by another
+    DEPEG_PCT since the last push or after DEPEG_COOLDOWN_SEC, and a quiet
+    note once the coin is back within REPEG_PCT. state["pegs"] holds the open
+    episodes (since, sent, gap at the last push) and survives the daily
+    reset. No prices, no push: the failure is logged.
+    """
+    if state is None:
+        return
+    try:
+        prices = prices if prices is not None else peg_prices()
+    except Exception as exc:
+        log(f"  peg watch: no prices ({exc})")
+        return
+    pegs = state.setdefault("pegs", {})
+    parts = []
+    for coin in PEG_COINS:
+        px = prices.get(coin)
+        if not px:
+            parts.append(f"{coin} ?")
+            continue
+        off = (px - 1.0) * 100.0            # signed; negative = under the dollar
+        gap = abs(off)
+        parts.append(f"{coin} {px:.4f}")
+        ep = pegs.get(coin)
+        if gap >= DEPEG_PCT:
+            due = (not ep
+                   or gap >= float(ep.get("gap") or 0) + DEPEG_PCT
+                   or now_ts - float(ep.get("sent") or 0) >= DEPEG_COOLDOWN_SEC)
+            if due:
+                side = "under" if off < 0 else "over"
+                body = [f"{coin} is ${px:.4f} on Kraken, {gap:.2f}% {side} $1.",
+                        f"Information, not a trade: after a USDT move past {DEPEG_PCT:g}% from "
+                        f"$1, bitcoin's odds of a sharp jump in the next five minutes are about "
+                        f"five times normal (Perez Riaza & Gnabo 2025). The red lines are frozen "
+                        f"until the Nov 5 review; the stops do the work.",
+                        "Check: are your stops open and at their prices? A fast move can take "
+                        "several out at once (the CRASH CHECK covers that).",
+                        f"Repeats if the gap widens by another {DEPEG_PCT:g}% or after "
+                        f"{DEPEG_COOLDOWN_SEC // 3600} hours; a quiet note when it is back "
+                        f"within {REPEG_PCT:g}%."]
+                if push(f"DEPEG: {coin} ${px:.4f}, {gap:.2f}% {side} $1", "\n".join(body),
+                        priority="max", tags="rotating_light", loud=True) is not False:
+                    pegs[coin] = {"since": (ep or {}).get("since") or now_ts,
+                                  "sent": now_ts, "gap": gap}
+            log(f"  PEG WATCH {coin} {px:.4f} ({gap:.2f}% off){'' if due else ' - said already'}")
+        elif ep and gap <= REPEG_PCT:
+            hours = (now_ts - float(ep.get("since") or now_ts)) / 3600.0
+            push(f"{coin} back at peg: ${px:.4f}",
+                 f"{coin} is back within {REPEG_PCT:g}% of $1, about {hours:.1f} hours after "
+                 f"it first moved {DEPEG_PCT:g}% off.",
+                 tags="white_check_mark", quiet=True)
+            pegs.pop(coin, None)
+            log(f"  PEG WATCH {coin} back at peg ({px:.4f})")
+    log("  pegs: " + ", ".join(parts))
+
+
 # --- Screens ----------------------------------------------------------------
 
 def is_foreign(q):
@@ -1412,6 +1701,10 @@ def load_state():
         fresh = fresh_state(today, prune_streak(state.get("streak") or {}),
                             prune_alert_log(state.get("alerts_today") or {}))
         fresh["pullback_sent"] = state.get("pullback_sent") or []
+        # So an incident or a depeg that spans 7 PM Central is not announced
+        # twice (2026-10-25).
+        fresh["venue"] = state.get("venue") or {}
+        fresh["pegs"] = state.get("pegs") or {}
         return fresh
     except (OSError, ValueError):
         log("  no previous state found")
@@ -2632,6 +2925,16 @@ def main():
         check_live_stops(state, now_ts)
     except Exception as exc:
         log(f"  stop watch failed ({exc}) - alerts unaffected")
+    # Venue status (Robinhood loud while lots are held, Coinbase quiet) and
+    # the stablecoin pegs (2026-10-25).
+    try:
+        check_venues(state, now_ts)
+    except Exception as exc:
+        log(f"  venue watch failed ({exc}) - alerts unaffected")
+    try:
+        check_pegs(state, now_ts)
+    except Exception as exc:
+        log(f"  peg watch failed ({exc}) - alerts unaffected")
 
     crypto_pending = filter_tradable(
         collect_pending(crypto_movers, CRYPTO_ALERT_LEVELS, fired, "crypto"),
