@@ -183,6 +183,52 @@ def test_evaluate():
     check("nights counted", ev["nights"] >= 10, ev["nights"])
 
 
+def test_initial_stop():
+    """A new lot's first stop is measured from its fill (2026-10-25). The
+    12-hour-low reference is for raises; it must not start a stop low."""
+    # DOT, 2026-10-23: bought at 1.08622 (spread 0.99%), the 12-hour low was
+    # about 1.0749, and the live price 1.0835. The rule says 0.9141; the 12h
+    # low said 0.9046 - which is what went in.
+    dot = {"symbol": "DOT", "product": "DOT-USD", "qty": 500, "avg_cost": 1.08622,
+           "spread_pct": 0.99, "current_stop": None, "room_override_pct": 15,
+           "routing": "market_maker", "decimals": 4, "bought": "2026-10-23"}
+    dip = make_candles(base=1.0835)
+    for c in dip[:12]:            # the newest 12 hourly closes dip to 1.0749
+        c[4] = 1.0749
+    ev = sc.evaluate(dot, 1.0835, dip)
+    check("bought above the 12h low: the entry stop is 15% under the fill",
+          ev["stop"] == 0.9141 and ev["initial"] and ev["fill_stop"] == 0.9141, ev["stop"])
+    check("...and the lot still has 'no stop set' as its reason",
+          sc.alert_reason(ev, False) == "no stop set")
+    text = sc.describe(ev, "no stop set")
+    check("describe says it is the initial stop", "INITIAL STOP: 15% under your fill" in text, text)
+    # Bought below the 12-hour low (the coin kept climbing after the fill):
+    # the 12h-low stop is the higher of the two and stands.
+    up = make_candles(base=1.20)
+    ev = sc.evaluate(dot, 1.20, up)
+    check("bought below the 12h low: the higher 12h-low stop stands",
+          ev["stop"] == sc.stop_price(1.20, 15, 0.99, 4) and ev["stop"] > 0.9141
+          and not ev["initial"] and ev["fill_stop"] == 0.9141, ev["stop"])
+    check("...with no initial-stop line", "INITIAL STOP" not in sc.describe(ev, "no stop set"))
+    # Already down through the entry level before any stop went in: no entry
+    # stop can be placed above the market, so the measured one stands and the
+    # text says the lot is past its exit.
+    ev = sc.evaluate(dot, 0.90, make_candles(base=0.90))
+    check("price under the entry level: the measured stop, under the market",
+          ev["stop"] == sc.stop_price(0.90, 15, 0.99, 4) and ev["stop"] < 0.90
+          and not ev["initial"] and ev["fill_stop"] == 0.9141, ev["stop"])
+    text = sc.describe(ev, "no stop set")
+    check("...and describe says so", "entry stop would be $0.9141" in text
+          and "past where it should have exited" in text, text)
+    # A lot with a live stop is untouched: no fill_stop, no floor.
+    ev = sc.evaluate(dict(dot, current_stop=0.9046), 1.0835, dip)
+    check("a lot with a live stop: unchanged (ratchet holds 0.9046 over 0.9046)",
+          ev["fill_stop"] is None and not ev["initial"] and ev["stop"] == 0.9046, ev["stop"])
+    ev = sc.evaluate(dict(dot, current_stop=0.9046), 1.0835, make_candles(base=1.0835))
+    check("...and a raise is still measured from the 12h low, not the fill",
+          ev["stop"] == sc.stop_price(1.0835, 15, 0.99, 4), ev["stop"])
+
+
 def test_alert_reason():
     base = {"price": 100.0, "stop": 94.0, "running": False}
 
