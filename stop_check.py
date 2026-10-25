@@ -53,6 +53,13 @@ Loud failures and order age (added 2026-10-16, Kyle's "stop safety"):
   "stop_placed", the date its live stop order was entered. From day 80 the
   check asks for the order to be re-entered at the same price, which resets
   the clock.
+
+Initial stop (added 2026-10-25): a lot whose "current_stop" is null gets its
+first stop measured from its own fill - the room under average cost, spread
+included - never lower. The 12-hour-low reference (2026-10-06) is a rule for
+RAISES: it keeps a spike from dragging a stop up into its own retrace. Applied
+to a brand-new lot it did the opposite, starting the stop below the rule's
+level whenever the lot was bought above the 12-hour low (DOT, 2026-10-23).
 """
 
 import json
@@ -435,6 +442,19 @@ def evaluate(pos, price, candles):
     measured = stop_price(ref, room, spread, decimals)
     breakeven = breakeven_stop(pos, decimals)
     live = pos.get("current_stop")
+    # INITIAL STOP (2026-10-25). A lot with no stop yet starts at the room
+    # under its own fill, spread-adjusted - the entry stop of the rules; the
+    # 12-hour-low reference governs raises only. Until now a lot bought above
+    # the 12-hour low was told to start lower than the rule says (DOT, Oct 23:
+    # fill 1.08622, the rule 0.9141, this script 0.9046). The floor applies
+    # only while the fill-based stop is still under the market: a lot already
+    # down through it has no sensible entry stop left, so the measured one
+    # stands and describe() says why.
+    fill_stop = (stop_price(float(pos["avg_cost"]), room, spread, decimals)
+                 if live is None else None)
+    initial = fill_stop is not None and measured < fill_stop < price
+    if initial:
+        measured = fill_stop
     # Locked = the stop he actually has entered already protects breakeven.
     locked = BREAKEVEN_FLOOR and live is not None and float(live) >= breakeven
     floored = locked and measured < breakeven
@@ -452,6 +472,8 @@ def evaluate(pos, price, candles):
         "raise_ref": ref,
         "stop": stop,
         "measured_stop": measured,
+        "fill_stop": fill_stop,            # the entry stop, for a lot with no stop yet
+        "initial": initial,                # True when it is what this run recommends
         "breakeven": breakeven,
         "locked": locked,
         "floored": floored,
@@ -650,6 +672,14 @@ def describe(ev, why):
         proceeds = qty * ev["price"] * (1 - FILL_SLIPPAGE_PCT / 100.0)
         lines.append(f"  if sold now: {signed_usd(proceeds - ev['cost'])} against the "
                      f"${ev['cost']:,.0f} you paid (sell {qty:,.10g} at market)")
+    if ev.get("initial"):
+        lines.append(f"  INITIAL STOP: {ev['room']:.0f}% under your fill, spread "
+                     f"included - the 12-hour-low trail only raises it from here")
+    elif ev.get("fill_stop") is not None and ev["fill_stop"] >= ev["price"]:
+        lines.append(f"  the entry stop would be ${fmt(ev['fill_stop'], d)}, "
+                     f"{ev['room']:.0f}% under your fill, and the price is already "
+                     f"there or below - this stop is measured from the market "
+                     f"instead; the lot is past where it should have exited")
     if ev.get("ratcheted"):
         lines.append(f"  HELD at your live stop - the measured room would put "
                      f"it at ${fmt(ev['measured_stop'], d)}, but stops only "
