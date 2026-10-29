@@ -132,12 +132,12 @@
       "qty": 5,
       "avg_cost": 92.119,
       "spread_pct": 0.97,
-      "current_stop": null,
+      "current_stop": 77.54,
       "room_override_pct": 15,
       "routing": "market_maker",
       "decimals": 2,
       "bought": "2026-10-29",
-      "stop_placed": null
+      "stop_placed": "2026-10-29"
     }
   ]
 }
