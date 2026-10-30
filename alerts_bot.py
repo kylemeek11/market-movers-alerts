@@ -48,6 +48,12 @@ USDT 0.5% or more off the dollar on Kraken is a loud push: a USDT depeg
 raises bitcoin's five-minute jump odds about fivefold (Perez Riaza & Gnabo
 2025). Both are information for Kyle, not rules: the entry, exit and sizing
 rules are frozen until the Nov 5 review.
+
+Market shock (2026-10-30, after the Binance hack of Oct 29): when a quarter
+of the tracked coins are down 10% in 24 hours while lots are held, one loud
+push lists every held lot against its stop, so the fills get checked and
+reported. Seven stops filled that afternoon, each at its level, and the
+CRASH CHECK never fired because the coins crossed at different runs.
 """
 
 from __future__ import annotations
@@ -517,6 +523,24 @@ PEG_COINS = ("USDC", "USDT")
 DEPEG_PCT = 0.5
 REPEG_PCT = 0.2
 DEPEG_COOLDOWN_SEC = 6 * 3600
+
+# Market shock (2026-10-30, after the Binance hack of Oct 29; rulebook
+# section 9). A hack, a liquidation cascade or a macro shock hits every coin
+# at once - hacks raise volatility and cross-coin correlation (Lyocsa et al.
+# 2020; Corbet et al. 2020; Caporale et al. 2021) - and the market moves
+# before any announcement: on Oct 29 the drains began at 20:04 UTC, seven of
+# Kyle's stops filled from 20:41, and Binance paused withdrawals at about
+# 22:33. News is too slow; breadth is the tell. When SHOCK_SHARE of the
+# tracked universe (at least SHOCK_MIN_COINS coins) is down SHOCK_DROP_PCT or
+# more in 24 hours while lots are held, one max-priority push lists every
+# held lot with its distance to its stop, so the fills get checked and
+# reported; again after SHOCK_COOLDOWN_SEC while it lasts. The old CRASH
+# CHECK (three coins at their stops in one run) never fired on Oct 29: the
+# coins crossed their stops at different runs and bounced.
+SHOCK_DROP_PCT = 10.0
+SHOCK_SHARE = 0.25
+SHOCK_MIN_COINS = 10
+SHOCK_COOLDOWN_SEC = 6 * 3600
 
 PUSH_RETRY_WAIT_S = 3
 PUSH_STATS = {"failed": 0}
@@ -1429,6 +1453,77 @@ def check_pegs(state, now_ts, prices=None):
     log("  pegs: " + ", ".join(parts))
 
 
+def check_market_shock(state, now_ts, rows, book=None):
+    """Market shock (2026-10-30): a loud push when SHOCK_SHARE of the tracked
+    coins are down SHOCK_DROP_PCT in 24 hours while lots are held.
+
+    The push names every held lot with its last price and its distance to its
+    stop (or NO STOP), so the fills can be checked and reported the same hour;
+    the rest of the bot is unchanged - the stops do the work and the BTC red
+    lines keep the stars off. Once per episode and again every
+    SHOCK_COOLDOWN_SEC while the breadth stays past the bar; state["shock"]
+    survives the daily reset. Nothing is sent with nothing held, and nothing
+    when the screen is empty.
+    """
+    if state is None or not rows:
+        return
+    down = [r for r in rows if r.get("pct") is not None and float(r["pct"]) <= -SHOCK_DROP_PCT]
+    n, total = len(down), len(rows)
+    shock = n >= SHOCK_MIN_COINS and n >= SHOCK_SHARE * total
+    mem = state.setdefault("shock", {})
+    if not shock:
+        if mem:
+            log(f"  SHOCK over: {n} of {total} coins down {SHOCK_DROP_PCT:.0f}%+ "
+                f"(was {mem.get('n')})")
+            mem.clear()
+        return
+    book = book if book is not None else load_book()
+    lots = (book or {}).get("positions") or []
+    if not lots:
+        log(f"  SHOCK {n} of {total} coins down {SHOCK_DROP_PCT:.0f}%+ in 24h - nothing held")
+        return
+    if now_ts - float(mem.get("sent") or 0) < SHOCK_COOLDOWN_SEC:
+        log(f"  SHOCK {n} of {total} coins down {SHOCK_DROP_PCT:.0f}%+ in 24h - said already")
+        return
+    by_sym = {r.get("symbol"): r for r in rows}
+    worst = sorted(down, key=lambda r: float(r["pct"]))[:5]
+    worst_txt = ", ".join(f"{r.get('symbol')} {float(r['pct']):+.0f}%" for r in worst)
+    body = [f"{n} of {total} tracked coins are down {SHOCK_DROP_PCT:.0f}% or more in 24 hours "
+            f"(worst: {worst_txt}). A hack, a liquidation cascade or a macro shock moves every "
+            f"coin at once, usually before any announcement. The stops do the work; here is "
+            f"where each lot stands:"]
+    at_or_under = 0
+    for p in lots:
+        sym = p.get("symbol"); coin = base_symbol(sym); row = by_sym.get(coin)
+        stop = p.get("current_stop")
+        px = float(row["price"]) if row and row.get("price") else None
+        chg = f"{float(row['pct']):+.1f}% 24h" if row and row.get("pct") is not None else "no price"
+        if stop is None:
+            body.append(f"  {sym}: NO STOP ({chg})")
+        elif px is None:
+            body.append(f"  {sym}: stop {money(float(stop))} ({chg})")
+        else:
+            gap = (px / float(stop) - 1) * 100.0
+            if gap <= 0:
+                at_or_under += 1
+                body.append(f"  {sym}: {money(px)} is AT or UNDER its stop {money(float(stop))} - "
+                            f"it should have filled ({chg})")
+            else:
+                body.append(f"  {sym}: {money(px)}, {gap:.1f}% above its stop {money(float(stop))} ({chg})")
+    body.append("Open Robinhood: which stops filled? Report every fill the same hour so the "
+                "records, the limit and the crash budget match. No gold star goes out while "
+                "BTC's red lines hold, and nothing is bought into a shock.")
+    body.append(f"Repeats every {SHOCK_COOLDOWN_SEC // 3600} hours while it lasts.")
+    title = (f"MARKET SHOCK: {n} of {total} coins down {SHOCK_DROP_PCT:.0f}%+"
+             + (f", {at_or_under} stop{'s' if at_or_under != 1 else ''} hit" if at_or_under else ""))
+    if push(title, "\n".join(body), priority="max", tags="rotating_light",
+            click="https://robinhood.com/crypto", loud=True) is not False:
+        mem["sent"] = now_ts
+        mem["n"] = n
+    log(f"  SHOCK {n} of {total} coins down {SHOCK_DROP_PCT:.0f}%+ in 24h: {at_or_under} of "
+        f"{len(lots)} held lots at or under their stops")
+
+
 # --- Screens ----------------------------------------------------------------
 
 def is_foreign(q):
@@ -1705,6 +1800,7 @@ def load_state():
         # twice (2026-10-25).
         fresh["venue"] = state.get("venue") or {}
         fresh["pegs"] = state.get("pegs") or {}
+        fresh["shock"] = state.get("shock") or {}
         return fresh
     except (OSError, ValueError):
         log("  no previous state found")
@@ -2935,6 +3031,13 @@ def main():
         check_pegs(state, now_ts)
     except Exception as exc:
         log(f"  peg watch failed ({exc}) - alerts unaffected")
+    # A quarter of the universe down 10% in a day while lots are held
+    # (2026-10-30, the Binance hack): where every stop stands, once.
+    try:
+        if not screen_down:
+            check_market_shock(state, now_ts, crypto_rows)
+    except Exception as exc:
+        log(f"  shock check failed ({exc}) - alerts unaffected")
 
     crypto_pending = filter_tradable(
         collect_pending(crypto_movers, CRYPTO_ALERT_LEVELS, fired, "crypto"),
