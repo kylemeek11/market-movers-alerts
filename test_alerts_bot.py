@@ -1508,11 +1508,73 @@ try:
 finally:
     ab.push = real_push
 
-# The venue and peg memories survive the daily reset, like pullback_sent.
+print("\nMarket shock (2026-10-30): a quarter of the universe down 10% while lots are held")
+sent = []
+real_push = ab.push
+ab.push = lambda title, message, **k: sent.append((title, message, k))
+
+
+def universe(n_down, total=82, drop=-12.0):
+    """A screen of `total` coins, the first n_down of them down `drop`% in 24h."""
+    rows = []
+    for i in range(total):
+        rows.append({"kind": "crypto", "symbol": f"C{i}", "name": f"Coin {i}", "price": 1.0,
+                     "pct": drop if i < n_down else 0.5, "candidate": False})
+    return rows
+
+
+try:
+    # Oct 29 as the bot would have seen it around 4 PM CT: 35 of 82 coins down 10%+,
+    # LINK and DOT through their stops, XCN and HYPE above theirs.
+    rows = universe(38)                      # 38 down, three of them re-labelled below -> 35
+    for r in rows:
+        if r["symbol"] == "C0": r.update(symbol="LINK", price=10.95, pct=-7.5)
+        if r["symbol"] == "C1": r.update(symbol="DOT", price=0.90, pct=-10.8)
+        if r["symbol"] == "C2": r.update(symbol="XCN", price=0.00395, pct=-4.5)
+        if r["symbol"] == "C3": r.update(symbol="HYPE", price=89.0, pct=+10.0)
+    held = {"positions": [lot("LINK#4", 200, 13.0877, 11.02), lot("DOT", 500, 1.08622, 0.9046),
+                          lot("XCN#4", 500000, 0.00446541, 0.0037523), lot("HYPE", 5, 92.119, None)]}
+    st = {}
+    ab.check_market_shock(st, NOON_CT, rows, book=held)
+    check("35 of 82 down 10%+ with lots held -> one loud MARKET SHOCK at max",
+          len(sent) == 1 and sent[0][0] == "MARKET SHOCK: 35 of 82 coins down 10%+, 2 stops hit"
+          and sent[0][2].get("priority") == "max" and sent[0][2].get("loud") is True, sent)
+    body = sent[0][1] if sent else ""
+    check("...naming each lot against its stop",
+          "LINK#4: $10.95 is AT or UNDER its stop $11.02" in body
+          and "DOT: $0.9 is AT or UNDER its stop $0.9046" in body
+          and "XCN#4: $0.00395, 5.3% above its stop $0.003752" in body and "HYPE: NO STOP (+10.0% 24h)" in body
+          and "Report every fill" in body, body)
+    check("...and remembered", st["shock"].get("sent") == NOON_CT and st["shock"].get("n") == 35, st)
+    sent.clear()
+    ab.check_market_shock(st, NOON_CT + 3600, rows, book=held)
+    check("an hour later, still a shock: no repeat", sent == [], sent)
+    ab.check_market_shock(st, NOON_CT + 7 * 3600, rows, book=held)
+    check("seven hours later, still a shock: said again", len(sent) == 1, sent)
+    sent.clear()
+    ab.check_market_shock(st, NOON_CT + 8 * 3600, universe(4), book=held)
+    check("breadth back to normal: nothing sent, the memory cleared", sent == [] and st["shock"] == {}, st)
+    ab.check_market_shock({}, NOON_CT, universe(20), book=held)
+    check("20 of 82 (24%) is under the quarter bar: nothing", sent == [], sent)
+    ab.check_market_shock({}, NOON_CT, universe(9, total=30), book=held)
+    check("9 coins is under the 10-coin floor even at 30%: nothing", sent == [], sent)
+    ab.check_market_shock({}, NOON_CT, universe(35), book={"positions": []})
+    check("nothing held: nothing sent", sent == [], sent)
+    ab.check_market_shock({}, NOON_CT, [], book=held)
+    ab.check_market_shock({}, NOON_CT, None, book=held)
+    ab.check_market_shock(None, NOON_CT, universe(35), book=held)
+    check("empty screen or no state: nothing, no crash", sent == [], sent)
+    check("the bar is a quarter of the universe, at least ten coins, 10% down",
+          ab.SHOCK_SHARE == 0.25 and ab.SHOCK_MIN_COINS == 10 and ab.SHOCK_DROP_PCT == 10.0)
+finally:
+    ab.push = real_push
+
+# The venue, peg and shock memories survive the daily reset, like pullback_sent.
 tmp = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
 json.dump({"date": "2000-01-01", "fired": {}, "marks": {},
            "venue": {"Robinhood:incident:abc123": {"t": 1.0, "what": "x", "loud": True}},
-           "pegs": {"USDT": {"since": 1.0, "sent": 1.0, "gap": 0.6}}}, tmp)
+           "pegs": {"USDT": {"since": 1.0, "sent": 1.0, "gap": 0.6}},
+           "shock": {"sent": 1.0, "n": 35}}, tmp)
 tmp.close()
 saved_path = ab.STATE_FILE
 ab.STATE_FILE = ab.Path(tmp.name)
@@ -1521,8 +1583,9 @@ try:
 finally:
     ab.STATE_FILE = saved_path
     os.unlink(tmp.name)
-check("a new day keeps the open venue items and peg episodes",
-      "Robinhood:incident:abc123" in fresh.get("venue", {}) and "USDT" in fresh.get("pegs", {}), fresh)
+check("a new day keeps the open venue items, peg episodes and the shock memory",
+      "Robinhood:incident:abc123" in fresh.get("venue", {}) and "USDT" in fresh.get("pegs", {})
+      and fresh.get("shock", {}).get("n") == 35, fresh)
 
 print("\nPushes: two tries, failures counted, quiet topic")
 import urllib.request as _ur
