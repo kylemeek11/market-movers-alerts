@@ -1587,6 +1587,85 @@ check("a new day keeps the open venue items, peg episodes and the shock memory",
       "Robinhood:incident:abc123" in fresh.get("venue", {}) and "USDT" in fresh.get("pegs", {})
       and fresh.get("shock", {}).get("n") == 35, fresh)
 
+print("\nBreakout prices from Coinbase (2026-11-03): the coins on a tight base read Coinbase's tape")
+
+
+def daily_entry(prev_close, base14=8.0, avg50=None):
+    return {"d": ab.dc.utc_day(NOON_CT), "prev_close": prev_close, "base14": base14,
+            "avg50": avg50 if avg50 is not None else prev_close * 0.97,
+            "high30": prev_close * 1.1, "close3": prev_close, "vol30": 3.0, "days": [0.5, -0.3]}
+
+
+def crow(sym, price, kind="crypto"):
+    return {"kind": kind, "symbol": sym, "name": sym, "price": price, "pct": 1.0, "candidate": False}
+
+
+try:
+    st = {"daily": {"BCH": daily_entry(280.0),            # tight base, +4.6% on the screen
+                    "QNT": daily_entry(100.0),            # tight base, +1% - not moving yet
+                    "MEGA": daily_entry(0.05, base14=22.0),  # loose base, +8%
+                    "DOT": daily_entry(1.0),              # tight base, +6%, fetch fails
+                    "SOL": daily_entry(200.0)}}           # tight base, +2.0%, exactly the bar
+    screen = [crow("BCH", 292.9), crow("QNT", 101.0), crow("MEGA", 0.054), crow("DOT", 1.06),
+              crow("SOL", 204.0), crow("BTC", 77000.0), crow("AAPL", 250.0, kind="stock")]
+    before = json.dumps(screen, sort_keys=True)
+    asked, logged = [], []
+    real_log = ab.log
+    ab.log = logged.append
+
+    def fake_price(product):
+        asked.append(product)
+        if product == "DOT-USD":
+            raise OSError("timed out")
+        return {"BCH-USD": 294.8, "SOL-USD": 203.5}[product]
+
+    out = ab.price_bases_on_coinbase(st, screen, NOON_CT, price_of=fake_price, sleep=lambda s: None)
+    by = {r["symbol"]: r for r in out}
+    check("only the coins on a tight base and already moving are priced, biggest mover first",
+          asked == ["DOT-USD", "BCH-USD", "SOL-USD"], asked)
+    check("a priced row carries Coinbase's trade, its source and the screen's price",
+          by["BCH"]["price"] == 294.8 and by["BCH"]["price_src"] == "coinbase"
+          and by["BCH"]["price_screen"] == 292.9 and by["SOL"]["price"] == 203.5, by["BCH"])
+    check("a failed fetch keeps the screen's price", by["DOT"]["price"] == 1.06
+          and "price_src" not in by["DOT"], by["DOT"])
+    check("a quiet coin, a loose base, BTC and a stock keep the screen's price untouched",
+          by["QNT"]["price"] == 101.0 and by["MEGA"]["price"] == 0.054
+          and by["BTC"] is screen[5] and by["AAPL"] is screen[6], out)
+    check("the screen's rows are not changed", json.dumps(screen, sort_keys=True) == before
+          and out is not screen and len(out) == len(screen))
+    check("...and the run log says who was priced where",
+          len(logged) == 1 and logged[0].startswith("  breakout prices from Coinbase for 2 of 3 coins on a tight base: BCH, SOL")
+          and "1 unavailable (DOT)" in logged[0], logged)
+    # Now BCH's +4.6% on the screen is +5.3% on Coinbase: the breakout test sees it.
+    ctx = ab.dc.coin_context(st["daily"]["BCH"], by["BCH"]["price"], ab.dc.utc_day(NOON_CT))
+    check("the breakout test then reads Coinbase's +5.3%, not the screen's +4.6%",
+          round(ctx["day_pct"], 1) == 5.3 and ab.dc.is_breakout(ctx, NOON_CT)[0], ctx)
+    logged.clear(); asked.clear()
+    big = {"daily": {f"C{i}": daily_entry(10.0) for i in range(40)}}
+    rows40 = [crow(f"C{i}", 10.0 * (1 + (0.03 + i * 0.001))) for i in range(40)]
+    out = ab.price_bases_on_coinbase(big, rows40, NOON_CT, price_of=lambda p: asked.append(p) or 10.6,
+                                     sleep=lambda s: None)
+    check("at most 30 coins a run, the biggest movers", len(asked) == 30 and
+          sum(1 for r in out if r.get("price_src") == "coinbase") == 30
+          and out[39].get("price_src") == "coinbase" and out[0].get("price_src") is None
+          and "10 over the cap" in logged[-1], logged)
+    logged.clear()
+    check("nothing on a tight base: rows back untouched, nothing logged",
+          ab.price_bases_on_coinbase({"daily": {}}, screen, NOON_CT, price_of=fake_price) is screen
+          and logged == [])
+    check("no state or no rows: rows back as given",
+          ab.price_bases_on_coinbase(None, screen, NOON_CT, price_of=fake_price) is screen
+          and ab.price_bases_on_coinbase(st, [], NOON_CT, price_of=fake_price) == [])
+    boom = ab.price_bases_on_coinbase(st, screen, NOON_CT, price_of=fake_price,
+                                      sleep=lambda s: (_ for _ in ()).throw(RuntimeError("x")))
+    check("a failure inside returns the screen's rows and says so", boom is screen
+          and logged and "Coinbase breakout prices failed" in logged[-1], logged)
+    check("the bar is +2% on the screen, 30 coins, a tenth of a second apart",
+          ab.BREAKOUT_PRICE_MIN_PCT == 2.0 and ab.BREAKOUT_PRICE_MAX == 30
+          and ab.BREAKOUT_PRICE_GAP_SEC == 0.1)
+finally:
+    ab.log = real_log
+
 print("\nPushes: two tries, failures counted, quiet topic")
 import urllib.request as _ur
 import time as _time
