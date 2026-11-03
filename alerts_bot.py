@@ -54,6 +54,16 @@ of the tracked coins are down 10% in 24 hours while lots are held, one loud
 push lists every held lot against its stop, so the fills get checked and
 reported. Seven stops filled that afternoon, each at its level, and the
 CRASH CHECK never fired because the coins crossed at different runs.
+
+Breakout prices from Coinbase (2026-11-03): the BASE BREAKOUT test compares
+a live price with yesterday's Coinbase close, but the live price came from
+CoinGecko's lagged global average - two tapes a few tenths of a percent
+apart around a 5% line that must hold for 10 minutes. The coins on a tight
+base that are already moving are now priced from Coinbase's last trade for
+that test, the 7 AM re-check and the still-a-buy reminders
+(price_bases_on_coinbase), and every first sighting and fade is logged, so
+the gap between the live trigger and the study's close-based one can be
+measured. The rules are unchanged; only the bot's eyes.
 """
 
 from __future__ import annotations
@@ -476,6 +486,18 @@ NIGHT_DIGEST_MAX_AGE_H = 14
 # one. Stars go at ntfy's "max" priority for the same reason (2026-10-21).
 STAR_REPEAT_MIN = (10, 30)
 STAR_PRIORITY = "max"
+# Breakout prices from Coinbase (2026-11-03). The base, the 50-day average
+# and yesterday's close behind the BASE BREAKOUT test are Coinbase daily
+# candles; the live price they were compared with came from CoinGecko's
+# lagged global average. For the coins on a tight base and already up
+# BREAKOUT_PRICE_MIN_PCT on the screen's tape, the test (collect_breakouts,
+# the 7 AM re-check, the still-a-buy reminders) uses Coinbase's last trade
+# instead - at most BREAKOUT_PRICE_MAX coins a run, biggest movers first. A
+# coin whose price cannot be fetched keeps the screen's. Everything else in
+# the run (rate, threshold, shock) keeps the screen's price.
+BREAKOUT_PRICE_MIN_PCT = 2.0
+BREAKOUT_PRICE_MAX = 30
+BREAKOUT_PRICE_GAP_SEC = 0.1
 
 # Stop watch. A triggered Robinhood crypto stop is a market sell collared 5%
 # under the stop; past that it cannot fill and may be canceled after five
@@ -1144,6 +1166,65 @@ def coinbase_price(product, timeout=6):
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         price = float(json.loads(resp.read().decode("utf-8")).get("price") or 0)
     return price if price > 0 else None
+
+
+def price_bases_on_coinbase(state, rows, now_ts, price_of=None, sleep=None):
+    """The screen's rows with Coinbase's last trade as the price of every
+    coin on a tight base that is already moving (2026-11-03).
+
+    Returns a new list; the screen's rows are never changed. A substituted
+    row carries `price_src` "coinbase" and the screen's price in
+    `price_screen`. Candidates are crypto rows whose daily entry is today's
+    and shows a base inside BASE_RANGE_MAX_PCT, up at least
+    BREAKOUT_PRICE_MIN_PCT on the screen's price; at most BREAKOUT_PRICE_MAX
+    of them, biggest day move first. A fetch that fails keeps the screen's
+    price for that coin. Never fatal: any error returns the rows as given.
+    """
+    if dc is None or not rows or state is None:
+        return rows
+    try:
+        import time as _time
+        price_of = price_of or coinbase_price
+        sleep = sleep or _time.sleep
+        daily = state.get("daily") or {}
+        today = dc.utc_day(now_ts)
+        cands = []
+        for i, r in enumerate(rows):
+            if r.get("kind") != "crypto":
+                continue
+            sym = str(r.get("symbol") or "").upper()
+            ctx = dc.coin_context(daily.get(sym), r.get("price"), today)
+            if (ctx and ctx.get("base14") is not None
+                    and ctx["base14"] <= dc.BASE_RANGE_MAX_PCT
+                    and ctx["day_pct"] >= BREAKOUT_PRICE_MIN_PCT):
+                cands.append((ctx["day_pct"], i, sym))
+        if not cands:
+            return rows
+        cands.sort(key=lambda t: (-t[0], t[2]))
+        out = list(rows)
+        done, failed = [], []
+        for n, (_, i, sym) in enumerate(cands[:BREAKOUT_PRICE_MAX]):
+            if n:
+                sleep(BREAKOUT_PRICE_GAP_SEC)
+            try:
+                px = price_of(f"{sym}-USD")
+            except Exception:
+                px = None
+            if not px or float(px) <= 0:
+                failed.append(sym)
+                continue
+            out[i] = dict(rows[i], price=float(px), price_src="coinbase",
+                          price_screen=rows[i].get("price"))
+            done.append(sym)
+        over = len(cands) - min(len(cands), BREAKOUT_PRICE_MAX)
+        log(f"  breakout prices from Coinbase for {len(done)} of {len(cands)} coins on a "
+            f"tight base" + (f": {', '.join(done[:8])}" if done else "")
+            + (f"; {len(failed)} unavailable ({', '.join(failed[:5])})" if failed else "")
+            + (f"; {over} over the cap" if over else ""))
+        return out
+    except Exception as exc:
+        log(f"  Coinbase breakout prices failed ({exc}) - screen prices used")
+        return rows
 
 
 def check_live_stops(state, now_ts, book=None, price_of=None):
@@ -2815,7 +2896,7 @@ def run_breakouts(crypto_rows, fired, now_ts, overnight, state, tradable, btc_pr
     if dc is None:
         return
     try:
-        raw = dc.collect_breakouts(state, crypto_rows, fired, now_ts)
+        raw = dc.collect_breakouts(state, crypto_rows, fired, now_ts, log=log)
         pending = filter_tradable(raw, tradable, 1)
         if raw:
             dropped = len(raw) - len(pending)
@@ -2965,6 +3046,11 @@ def main():
     btc_price = next((r["price"] for r in crypto_rows if r["symbol"] == "BTC"), None)
     if not screen_down:
         refresh_daily_context(state, crypto_rows, now_ts)
+    # The breakout test, the 7 AM re-check and the still-a-buy reminders read
+    # Coinbase's tape for the coins that can break out today (2026-11-03);
+    # everything else keeps the screen's price.
+    breakout_rows = (price_bases_on_coinbase(state, crypto_rows, now_ts)
+                     if not screen_down else crypto_rows)
 
     # Rate of change first: it is the earliest signal, so it wins the run cap.
     if crypto_rows:
@@ -3001,19 +3087,19 @@ def main():
     # Tight-base breakouts: the checklist's second green light, independent
     # of the rate signal's volume gate.
     if not screen_down:
-        run_breakouts(crypto_rows, fired, now_ts, overnight, state, tradable,
+        run_breakouts(breakout_rows, fired, now_ts, overnight, state, tradable,
                       btc_price)
     # Rule 1: buy signals that came in outside 7 AM - 7 PM, re-checked once at
     # the first run inside the window; a gold star for each one still a buy.
     try:
-        send_night_digest(state, crypto_rows, now_ts, btc_price)
+        send_night_digest(state, breakout_rows, now_ts, btc_price)
     except Exception as exc:
         log(f"  overnight digest failed ({exc}) - alerts unaffected")
     # A gold star the phone may have missed: STILL A BUY at 10 and 30 minutes
     # while the coin is still a buy and not in the book (2026-10-21).
     try:
         if not screen_down:
-            send_star_repeats(state, crypto_rows, now_ts, btc_price)
+            send_star_repeats(state, breakout_rows, now_ts, btc_price)
     except Exception as exc:
         log(f"  star repeat check failed ({exc}) - alerts unaffected")
     # Held coins under a stop's sell limit, or several at their stops.
