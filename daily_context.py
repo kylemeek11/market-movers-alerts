@@ -24,7 +24,11 @@ keeps a once-a-day picture of every coin in the universe and turns it into:
    One honest difference from the study: the study entered at the CLOSE of a
    +5% day; the live alert fires the moment the day's move crosses +5%, so a
    coin that fades back by the close was never in the sample. The alert says
-   "today so far" for that reason.
+   "today so far" for that reason. (Since 2026-11-03 the live price in that
+   test comes from Coinbase's tape for the coins on a tight base, the same
+   tape as the base and the closes - alerts_bot.price_bases_on_coinbase -
+   and every first sighting and fade is logged, so the gap between the
+   live trigger and the study's can be measured at the Nov 5 review.)
 
 2. CONTEXT LINES appended to every crypto alert (rate, threshold, breakout):
    - BTC down 3%+ in 24h: buys on BTC dump days stopped out 37% (vs 15%).
@@ -433,7 +437,7 @@ def thin_book_line(state, symbol, now_ts=None, fetch=None, log=_log):
 
 # --- The breakout alert -----------------------------------------------------
 
-def collect_breakouts(state, rows, fired, now_ts):
+def collect_breakouts(state, rows, fired, now_ts, log=None):
     """Rows that are a green-light breakout and have not alerted today.
 
     The study's trigger is a CLOSE 5% up, which the live bot cannot wait
@@ -442,6 +446,13 @@ def collect_breakouts(state, rows, fired, now_ts):
     for one five-minute slice and closed +4.1%; a one-slice wick is not a
     breakout. First sightings are remembered in state["base_seen"] and
     forgotten the moment the coin drops back under the bar.
+
+    `log`, when given, gets one line at each first sighting and one when a
+    sighting fades before confirming (2026-11-03): until then a breakout
+    that flickered, or that the price feed never showed, left no trace in
+    the run log, and BCH on 2026-10-27 could not be diagnosed. A row may
+    carry `price_src` (alerts_bot prices coins on a tight base from
+    Coinbase's tape); the line names it.
 
     Returns [(fired_key, row, ctx)], biggest day move first.
     """
@@ -464,12 +475,20 @@ def collect_breakouts(state, rows, fired, now_ts):
         first = seen.get(sym)
         if not isinstance(first, (int, float)) or first > now_ts:
             seen[sym] = now_ts
+            if log:
+                src = f", {r['price_src']} price" if r.get("price_src") else ""
+                log(f"  breakout seen: {sym} +{ctx['day_pct']:.1f}% today from a "
+                    f"{ctx['base14']:.0f}% base, {ctx['vs50_pct']:+.0f}% vs 50-day{src} - "
+                    f"confirming in {BREAKOUT_CONFIRM_MIN:.0f} min")
             continue
         if now_ts - first < BREAKOUT_CONFIRM_MIN * 60.0:
             continue
         out.append((key, r, ctx))
     for sym in [k for k in seen if k not in still_green]:
         del seen[sym]
+        if log and fired.get(f"base:crypto:{sym}") != today:
+            log(f"  breakout faded: {sym} is back under +{BREAKOUT_DAY_PCT:.0f}% "
+                f"(or off the list) before confirming")
     out.sort(key=lambda t: -t[2]["day_pct"])
     return out
 
