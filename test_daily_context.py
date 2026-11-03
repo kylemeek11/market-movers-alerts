@@ -254,6 +254,26 @@ dc.collect_breakouts(st2, faded, {}, NOW + 5 * 60)
 check("dropping back under the bar forgets the sighting", "HYPE" not in st2["base_seen"])
 hits = dc.collect_breakouts(st2, rows, {}, NOW + 10 * 60)
 check("...so a return to +5% starts the clock again", hits == [] and "HYPE" in st2["base_seen"])
+# The run log sees every first sighting and every fade (2026-11-03).
+logged = []
+st3 = {"daily": dict(st["daily"])}
+dc.collect_breakouts(st3, [dict(rows[0], price_src="coinbase"), rows[1]], {}, NOW, log=logged.append)
+check("a first sighting is logged with its numbers and the price tape",
+      len(logged) == 1 and logged[0].startswith("  breakout seen: HYPE +") and "% today from a" in logged[0]
+      and "% base, +" in logged[0]
+      and logged[0].endswith("% vs 50-day, coinbase price - confirming in 10 min"), logged)
+dc.collect_breakouts(st3, rows, {}, NOW + 5 * 60, log=logged.append)
+check("...once, not on every run while it waits", len(logged) == 1, logged)
+dc.collect_breakouts(st3, faded, {}, NOW + 6 * 60, log=logged.append)
+check("a fade before confirming is logged", len(logged) == 2
+      and logged[1] == "  breakout faded: HYPE is back under +5% (or off the list) before confirming", logged)
+logged.clear()
+st4 = {"daily": dict(st["daily"]), "base_seen": {"HYPE": NOW - 15 * 60}}
+fired4 = {"base:crypto:HYPE": dc.utc_day(NOW)}
+dc.collect_breakouts(st4, rows, fired4, NOW, log=logged.append)
+dc.collect_breakouts(st4, faded, fired4, NOW + 5 * 60, log=logged.append)
+check("a coin that already alerted today logs no sighting and no fade", logged == [], logged)
+check("the log is optional", dc.collect_breakouts({"daily": dict(st["daily"])}, rows, {}, NOW) == [])
 check("tomorrow, yesterday's cache entry is stale and fires nothing",
       dc.collect_breakouts(st, rows, fired, NOW + 86400) == [])
 st_tomorrow = {"daily": {"HYPE": dict(st["daily"]["HYPE"], d=dc.utc_day(NOW + 86400))},
