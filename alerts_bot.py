@@ -472,6 +472,17 @@ POSITIONS_FILE = Path(os.environ.get("POSITIONS_FILE", "positions.json"))
 BUY_START_HOUR = 7          # rule 1: nothing bought 7 PM - 7 AM Central
 BUY_END_HOUR = 19
 DEFAULT_LOT_USD = 500
+# Graded size by volatility (2026-11-05; Kyle's "go" after the Nov 5 review,
+# claude/trade-log-review-2026-11-05.md section 11, test (c), which held in
+# both periods). A star's lot is the ladder's step x GRADED_TARGET_VOL_PCT /
+# the coin's 30-day average absolute daily move, never above the step and
+# never under GRADED_FLOOR of it, rounded to GRADED_ROUND_USD. It replaces
+# the two buckets (the full step, or half above 5%/day). A coin with no
+# volatility figure falls back to the old rule (half size on the high-vol
+# line). A sizing rule, so the sequential count (rule 2, step 3) continues.
+GRADED_TARGET_VOL_PCT = 3.0
+GRADED_FLOOR = 0.5
+GRADED_ROUND_USD = 5
 # Slots are coins, not lots (2026-10-19): the replays that size the scheme
 # hold one position per coin, and the add rule bounds the lots of one coin.
 # Ten slots kept 95% of the ten-year replay's money with two thirds of the
@@ -787,7 +798,31 @@ WAIT_TAG = "hourglass_flowing_sand"      # outside 7 AM - 7 PM: the 7 AM run re-
 NO_BUY_TAG = "no_entry_sign"             # a rule or a red line says no
 
 
-def buy_decision(symbol, now_ts, book=None, pending=None, half=None):
+def graded_lot(step, vol):
+    """The graded lot for a coin moving `vol` % a day on average (30 days):
+    step x GRADED_TARGET_VOL_PCT / vol, between GRADED_FLOOR x step and the
+    step, rounded to GRADED_ROUND_USD (never under the floor)."""
+    step = float(step)
+    try:
+        vol = float(vol)
+    except (TypeError, ValueError):
+        return step
+    if vol <= 0:
+        return step
+    raw = min(step, max(step * GRADED_FLOOR, step * GRADED_TARGET_VOL_PCT / vol))
+    size = round(raw / GRADED_ROUND_USD) * GRADED_ROUND_USD
+    return float(min(step, max(step * GRADED_FLOOR, size)))
+
+
+def coin_vol(state, symbol):
+    """The coin's 30-day average absolute daily move (%) from the daily
+    picture, or None."""
+    entry = ((state or {}).get("daily") or {}).get(base_symbol(symbol)) or {}
+    vol = entry.get("vol30")
+    return float(vol) if isinstance(vol, (int, float)) else None
+
+
+def buy_decision(symbol, now_ts, book=None, pending=None, half=None, vol=None):
     """May a buy signal on `symbol` be bought right now? (ok, note, usd).
 
     The checks are the standing rules (claude/trading-strategy.md): the
@@ -800,7 +835,9 @@ def buy_decision(symbol, now_ts, book=None, pending=None, half=None):
     only from a calm stop check (the coin up under 5% on the day), which a
     breakout day never is. The memecoin pack (MEME_PACK) counts as one coin
     for that rule.
-    `half` names a yellow flag that halves the lot (a high-vol coin).
+    `vol` is the coin's 30-day average absolute daily move (%): when given,
+    the lot is graded (graded_lot). Without it, `half` names a yellow flag
+    that halves the lot (a high-vol coin), the rule before 2026-11-05.
     `pending` lists the buys already starred earlier in the same run
     ({"symbol", "usd"}); they count as bought, so two stars in one run cannot
     overrun the book together. Buys made since positions.json was last
@@ -854,7 +891,12 @@ def buy_decision(symbol, now_ts, book=None, pending=None, half=None):
         if stop is None or float(stop) < lot_breakeven(first):
             return False, "held, first lot not locked: no add", 0.0
         return False, "held: adds only at a calm stop check", 0.0
-    size = lot / 2 if half else lot
+    if vol is not None:
+        size = graded_lot(lot, vol)
+        why = f"graded: {vol:.1f}%/day" if size < lot else None
+    else:
+        size = lot / 2 if half else lot
+        why = f"half size: {half}" if half else None
     budget = book.get("_crash_budget_usd")
     if budget is not None:
         try:
@@ -867,8 +909,8 @@ def buy_decision(symbol, now_ts, book=None, pending=None, half=None):
         if total > budget:
             return (False, f"over the crash budget (${total:,.0f} vs "
                            f"${budget:,.0f})", 0.0)
-    if half:
-        return True, f"${size:,.0f} lot (half size: {half})", size
+    if why:
+        return True, f"${size:,.0f} lot ({why})", size
     return True, f"${size:,.0f} lot", size
 
 
@@ -915,9 +957,9 @@ def crash_case(lots, gaps, pending=()):
     return loss
 
 
-def buy_gate(symbol, now_ts, book=None, pending=None, half=None):
+def buy_gate(symbol, now_ts, book=None, pending=None, half=None, vol=None):
     """buy_decision without the size: (ok, note)."""
-    ok, note, _ = buy_decision(symbol, now_ts, book, pending, half)
+    ok, note, _ = buy_decision(symbol, now_ts, book, pending, half, vol)
     return ok, note
 
 
@@ -978,11 +1020,11 @@ def buy_verdict(r, what, now_ts, state=None, kind="base", lines=()):
         return {"quiet": True, "tags": "zap", "usd": 0.0,
                 "title": f"{sym} {what}", "head": "NOT A BUY: stocks are not in the scheme"}
     ok, note, usd = buy_decision(sym, now_ts, pending=(state or {}).get("run_stars"),
-                                 half=half_reason(lines))
+                                 half=half_reason(lines), vol=coin_vol(state, sym))
     if ok:
         return {"quiet": False, "tags": BUY_TAG, "usd": usd,
                 "title": f"{sym} - BUY {note} - {what}",
-                "head": buy_head(note, usd)}
+                "head": buy_head(note, usd, attention_line(state))}
     if not in_buy_window(now_ts):
         remember_night_star(state, r, what, now_ts, kind)
         return {"quiet": True, "tags": WAIT_TAG, "usd": 0.0,
@@ -1000,6 +1042,9 @@ def note_star(state, r, v, now_ts=None, what=None):
     if state is not None and v.get("usd"):
         state.setdefault("run_stars", []).append(
             {"symbol": base_symbol(r["symbol"]), "usd": float(v["usd"])})
+        # The forward test's record: one line per star sent (2026-11-05).
+        log(f"  star logged: {base_symbol(r['symbol'])} ${float(v['usd']):,.0f}, "
+            f"attention {attention_word(state)}")
         if now_ts is not None:
             sym = base_symbol(r["symbol"])
             stars = [s for s in state.get("open_stars") or [] if s.get("symbol") != sym]
@@ -1053,7 +1098,7 @@ def send_star_repeats(state, rows, now_ts, btc_price=None, book=None):
         breakeven, stop = cost_hints(row["price"])
         last = n + 1 >= len(STAR_REPEAT_MIN)
         body = [f"STILL A BUY: the gold star for {sym} went out at {when} and {sym} is not "
-                f"in positions.json. " + buy_head(note, usd),
+                f"in positions.json. " + buy_head(note, usd, attention_line(state)),
                 f"{row.get('name') or sym}  -  {money(row['price'])}",
                 f"re-checked now: still a base breakout{day}, no red line, the book has room",
                 f"break-even {money(breakeven)}  -  {STOP_HINT_PCT:.0f}% stop {money(stop)}",
@@ -1097,7 +1142,8 @@ def morning_check(state, row, btc_price, now_ts, pending=None):
     red = first_red(lines)
     if red:
         return False, red, 0.0
-    return buy_decision(sym, now_ts, pending=pending, half=half_reason(lines))
+    return buy_decision(sym, now_ts, pending=pending, half=half_reason(lines),
+                        vol=coin_vol(state, sym))
 
 
 def send_night_digest(state, rows, now_ts, btc_price=None):
@@ -1132,7 +1178,7 @@ def send_night_digest(state, rows, now_ts, btc_price=None):
             rest.append((s, f"{sym}: {seen} - {note}"))
             continue
         breakeven, stop = cost_hints(now_p)
-        body = [buy_head(note, usd),
+        body = [buy_head(note, usd, attention_line(state)),
                 f"{row.get('name') or sym}  -  {money(now_p)}",
                 f"overnight: {seen}",
                 "re-checked now: still a base breakout, no red line, the book has room",
@@ -1882,6 +1928,9 @@ def load_state():
         fresh["venue"] = state.get("venue") or {}
         fresh["pegs"] = state.get("pegs") or {}
         fresh["shock"] = state.get("shock") or {}
+        # The last attention reading outlives the reset, so a star in the
+        # first runs of a UTC day still carries one (2026-11-05).
+        fresh["attention"] = state.get("attention") or {}
         return fresh
     except (OSError, ValueError):
         log("  no previous state found")
@@ -2110,9 +2159,10 @@ def stop_loss_usd(usd):
     return float(usd) * (1 - kept)
 
 
-def buy_head(note, usd):
+def buy_head(note, usd, attention=None):
     """The first line of a gold-star alert: the order, then what its stop
-    costs if it fills, against what is paid."""
+    costs if it fills, against what is paid. `attention` (attention_line)
+    follows on its own line: information only, never a reason to skip."""
     head = f"BUY NOW: {note}, then the 15% stop below as soon as it fills"
     if usd:
         head += (f". If that stop fills: about -${stop_loss_usd(usd):,.0f} "
@@ -2120,7 +2170,111 @@ def buy_head(note, usd):
     # Robinhood's own price alert at the stop is the independent fill tell
     # (2026-10-18; strategy section 5, "Robinhood's own alerts").
     head += ". Then a Robinhood price alert at that stop."
+    if attention:
+        head += "\n" + attention
     return head
+
+
+# --- Attention, logged on every gold star (2026-11-05) ------------------------
+# The Nov 5 review's test (d) (claude/trade-log-review-2026-11-05.md section
+# 11): take a breakout only while the 7-day average of daily views of the
+# English Wikipedia "Bitcoin" article is above its 28-day average. It held as
+# written but rests on five trades in 2025-26, so Kyle chose to LOG it, not
+# use it: every gold star carries the reading, and it is judged once on the
+# live stars after 60 of them (claude/trading-strategy.md section 9 item 5).
+# Days up to yesterday (UTC), as in the test; Wikimedia publishes a day a few
+# hours after it ends, so until then the reading runs through the day before.
+ATTENTION_URL = ("https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article/"
+                 "en.wikipedia/all-access/user/Bitcoin/daily/{start}/{end}")
+ATTENTION_UA = "market-movers-alerts/1.0 (github.com/kylemeek11/market-movers-alerts)"
+ATTENTION_RETRY_SEC = 3600
+
+
+def attention_from_views(views):
+    """{through, avg7, avg28, pct, rising} from [(YYYYMMDD, views), ...]
+    oldest first: the last 7 days' mean against the last 28 days' mean.
+    None with fewer than 28 days."""
+    vals = [(str(d)[:8], float(v)) for d, v in views or [] if v is not None]
+    if len(vals) < 28:
+        return None
+    last28 = [v for _, v in vals[-28:]]
+    avg7, avg28 = sum(last28[-7:]) / 7.0, sum(last28) / 28.0
+    if avg28 <= 0:
+        return None
+    return {"through": vals[-1][0], "avg7": avg7, "avg28": avg28,
+            "pct": (avg7 / avg28 - 1) * 100.0, "rising": avg7 > avg28}
+
+
+def fetch_attention(now_ts, fetch=None, timeout=8):
+    """The attention reading from Wikimedia's pageviews API, days up to
+    yesterday (UTC). `fetch(url)` returns the JSON (tests)."""
+    from datetime import timedelta
+    day = datetime.fromtimestamp(now_ts, timezone.utc).date()
+    end = day - timedelta(days=1)
+    start = end - timedelta(days=40)
+    url = ATTENTION_URL.format(start=start.strftime("%Y%m%d"), end=end.strftime("%Y%m%d"))
+    if fetch is None:
+        import urllib.request
+        req = urllib.request.Request(url, headers={"User-Agent": ATTENTION_UA})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    else:
+        data = fetch(url)
+    items = (data or {}).get("items") or []
+    views = sorted((str(i.get("timestamp") or "")[:8], i.get("views")) for i in items)
+    return attention_from_views(views)
+
+
+def refresh_attention(state, now_ts, fetch=None):
+    """Keep state["attention"] current: once yesterday is in, nothing more
+    that day; otherwise at most one try an hour. A failure keeps the last
+    reading (its "through" date says how old it is). Never fatal."""
+    if state is None:
+        return None
+    from datetime import timedelta
+    att = state.get("attention") or {}
+    yday = (datetime.fromtimestamp(now_ts, timezone.utc).date()
+            - timedelta(days=1)).strftime("%Y%m%d")
+    if att.get("through") == yday:
+        return att
+    if now_ts - float(att.get("tried") or 0) < ATTENTION_RETRY_SEC:
+        return att
+    try:
+        new = fetch_attention(now_ts, fetch=fetch)
+    except Exception as exc:
+        att = dict(att, tried=now_ts)
+        state["attention"] = att
+        log(f"  attention: Wikipedia views not read ({exc}) - stars carry the last reading")
+        return att
+    if new:
+        new["tried"] = now_ts
+        state["attention"] = new
+        log(f"  attention: {'rising' if new['rising'] else 'falling'} - Bitcoin's "
+            f"Wikipedia views 7-day {new['avg7']:,.0f} vs 28-day {new['avg28']:,.0f} "
+            f"({new['pct']:+.0f}%), through {new['through']}")
+        return new
+    att = dict(att, tried=now_ts)
+    state["attention"] = att
+    return att
+
+
+def attention_line(state):
+    """The line every gold star carries, or a line saying it is unknown."""
+    att = (state or {}).get("attention") or {}
+    if att.get("avg7") is None:
+        return "attention: unknown (Wikipedia views not read) - information only"
+    d = str(att.get("through") or "")
+    when = f"{d[4:6]}-{d[6:8]}" if len(d) == 8 else "?"
+    return (f"attention: {'rising' if att.get('rising') else 'falling'} - Bitcoin's "
+            f"Wikipedia views 7-day {att['pct']:+.0f}% vs 28-day (through {when}). "
+            f"Information only: logged for the 60-star check, not a reason to skip")
+
+
+def attention_word(state):
+    att = (state or {}).get("attention") or {}
+    if att.get("avg7") is None:
+        return "unknown"
+    return "rising" if att.get("rising") else "falling"
 
 
 def format_body(row):
@@ -3046,6 +3200,12 @@ def main():
     btc_price = next((r["price"] for r in crypto_rows if r["symbol"] == "BTC"), None)
     if not screen_down:
         refresh_daily_context(state, crypto_rows, now_ts)
+    # Bitcoin's Wikipedia attention, for the line on every gold star
+    # (information only, 2026-11-05).
+    try:
+        refresh_attention(state, now_ts)
+    except Exception as exc:
+        log(f"  attention refresh failed ({exc}) - alerts unaffected")
     # The breakout test, the 7 AM re-check and the still-a-buy reminders read
     # Coinbase's tape for the coins that can break out today (2026-11-03);
     # everything else keeps the screen's price.
