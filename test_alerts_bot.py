@@ -1085,9 +1085,9 @@ try:
     st["daily"]["GRT"]["vol30"] = 6.4
     ab.send_breakouts([("base:crypto:GRT", dict(grt), base_ctx)], {}, TUE_NOON, False, state=st)
     title, body, kw = sent[-1]
-    check("a high-vol coin: the gold star for half a lot",
+    check("a high-vol coin: the gold star for a graded lot at the $250 floor",
           kw.get("tags") == "star"
-          and title == "GRT - BUY $250 lot (half size: high-vol coin) - base breakout +5.4% today"
+          and title == "GRT - BUY $250 lot (graded: 6.4%/day) - base breakout +5.4% today"
           and st.get("run_stars") == [{"symbol": "GRT", "usd": 250.0}], (title, st.get("run_stars")))
     ab.load_book = lambda: OPEN_BOOK
     sent.clear()
@@ -1739,6 +1739,127 @@ check("the buy line says what the stop costs, then asks for the Robinhood alert 
       ab.buy_head("$500 lot", 500.0))
 check("no size, no loss line", ab.buy_head("x", 0) == "BUY NOW: x, then the 15% stop below as soon as it fills."
       " Then a Robinhood price alert at that stop.", ab.buy_head("x", 0))
+
+print("\nGraded size by volatility (2026-11-05, the Nov 5 review's test (c))")
+for vol, want in ((2.0, 500), (3.0, 500), (3.3, 455), (4.0, 375), (5.0, 300), (6.0, 250),
+                  (8.0, 250), (None, 500), (0, 500), ("x", 500)):
+    check(f"graded lot at {vol}%/day on a $500 step is ${want}",
+          ab.graded_lot(500, vol) == want, ab.graded_lot(500, vol))
+check("graded lot scales with the ladder ($1,000 step, 4%/day -> $750)",
+      ab.graded_lot(1000, 4.0) == 750, ab.graded_lot(1000, 4.0))
+check("graded lot never under the floor after rounding",
+      all(ab.graded_lot(500, v / 10) >= 250 for v in range(1, 200)))
+check("graded lot never over the step",
+      all(ab.graded_lot(500, v / 10) <= 500 for v in range(1, 200)))
+check("a calm coin keeps the plain title: $500 lot",
+      ab.buy_decision("PYTH", NOON_CT, OPEN_BOOK, vol=2.5) == (True, "$500 lot", 500.0),
+      ab.buy_decision("PYTH", NOON_CT, OPEN_BOOK, vol=2.5))
+check("a 4%/day coin gets $375, and the title says why",
+      ab.buy_decision("PYTH", NOON_CT, OPEN_BOOK, vol=4.0)
+      == (True, "$375 lot (graded: 4.0%/day)", 375.0),
+      ab.buy_decision("PYTH", NOON_CT, OPEN_BOOK, vol=4.0))
+check("a known volatility overrides the old half-size flag",
+      ab.buy_decision("PYTH", NOON_CT, OPEN_BOOK, half="high-vol coin", vol=5.0)
+      == (True, "$300 lot (graded: 5.0%/day)", 300.0),
+      ab.buy_decision("PYTH", NOON_CT, OPEN_BOOK, half="high-vol coin", vol=5.0))
+check("no volatility figure: the old rule still halves on the high-vol line",
+      ab.buy_decision("PYTH", NOON_CT, OPEN_BOOK, half="high-vol coin")
+      == (True, "$250 lot (half size: high-vol coin)", 250.0))
+_tight = dict(OPEN_BOOK, _crash_budget_usd=140)
+_gaps = ab.load_crash_gaps
+ab.load_crash_gaps = lambda: {"_default": 0.21}
+try:
+    check("the crash budget is checked on the graded lot ($375 fits a $140 budget)",
+          ab.buy_decision("PYTH", NOON_CT, _tight, vol=4.0)[0] is True,
+          ab.buy_decision("PYTH", NOON_CT, _tight, vol=4.0))
+    check("...where a full $500 lot does not",
+          ab.buy_decision("PYTH", NOON_CT, _tight, vol=2.0)[0] is False,
+          ab.buy_decision("PYTH", NOON_CT, _tight, vol=2.0))
+finally:
+    ab.load_crash_gaps = _gaps
+check("coin_vol reads the daily picture", ab.coin_vol({"daily": {"PYTH": {"vol30": 4.2}}}, "PYTH") == 4.2)
+check("coin_vol: no entry -> None", ab.coin_vol({"daily": {}}, "PYTH") is None
+      and ab.coin_vol(None, "PYTH") is None)
+check("buy_gate passes the volatility through",
+      ab.buy_gate("PYTH", NOON_CT, OPEN_BOOK, vol=6.0) == (True, "$250 lot (graded: 6.0%/day)"))
+
+print("\nAttention on every gold star (2026-11-05, the Nov 5 review's test (d), logged not used)")
+_days = [f"202610{d:02d}" for d in range(1, 32)][:31]
+_flat = [(d, 1000) for d in _days[:21]] + [(d, 2000) for d in _days[21:28]]
+_a = ab.attention_from_views(_flat)
+check("7-day mean above the 28-day mean -> rising",
+      _a and _a["rising"] is True and _a["avg7"] == 2000 and abs(_a["avg28"] - 1250) < 1e-9
+      and _a["through"] == "20261028" and abs(_a["pct"] - 60.0) < 1e-9, _a)
+_down = [(d, 2000) for d in _days[:21]] + [(d, 1000) for d in _days[21:28]]
+check("7-day mean under the 28-day mean -> falling",
+      ab.attention_from_views(_down)["rising"] is False)
+check("only the last 28 days count",
+      ab.attention_from_views([("20260901", 10 ** 9)] + _flat)["avg28"] == _a["avg28"])
+check("fewer than 28 days -> no reading", ab.attention_from_views(_flat[:27]) is None)
+NOV5 = datetime(2026, 11, 5, 16, 0, tzinfo=timezone.utc).timestamp()
+_urls = []
+def _fake(url):
+    _urls.append(url)
+    return {"items": [{"timestamp": f"{d}00", "views": v} for d, v in reversed(_flat)]}
+_r = ab.fetch_attention(NOV5, fetch=_fake)
+check("fetch asks Wikimedia for the English 'Bitcoin' article, days up to yesterday (UTC)",
+      _urls and "/en.wikipedia/all-access/user/Bitcoin/daily/" in _urls[0]
+      and _urls[0].endswith("/20260925/20261104"), _urls)
+check("fetch sorts the days and reads them", _r and _r["rising"] is True and _r["through"] == "20261028", _r)
+_st = {}
+_late = [(f"202611{d:02d}", 1500) for d in range(1, 5)]
+_yfeed = lambda url: {"items": [{"timestamp": f"{d}00", "views": v} for d, v in _flat + _late]}
+ab.refresh_attention(_st, NOV5, fetch=_yfeed)
+check("refresh stores the reading", _st.get("attention", {}).get("through") == "20261104", _st)
+_calls = []
+ab.refresh_attention(_st, NOV5 + 600, fetch=lambda url: _calls.append(url) or _yfeed(url))
+check("once yesterday is in, no second fetch that day", _calls == [], _calls)
+_st2 = {"attention": dict(_a, tried=0)}
+def _boom(url):
+    raise OSError("no network")
+ab.refresh_attention(_st2, NOV5, fetch=_boom)
+check("a failed fetch keeps the last reading", _st2["attention"].get("avg7") == 2000
+      and _st2["attention"].get("tried") == NOV5, _st2)
+_calls = []
+ab.refresh_attention(_st2, NOV5 + 600, fetch=lambda url: _calls.append(url) or _yfeed(url))
+check("...and waits an hour before trying again", _calls == [], _calls)
+ab.refresh_attention(_st2, NOV5 + 3700, fetch=_yfeed)
+check("...then tries again", _st2["attention"].get("through") == "20261104", _st2)
+check("the star line says rising/falling, the gap and the date, and that it is information only",
+      ab.attention_line({"attention": _a})
+      == "attention: rising - Bitcoin's Wikipedia views 7-day +60% vs 28-day (through 10-28). "
+         "Information only: logged for the 60-star check, not a reason to skip",
+      ab.attention_line({"attention": _a}))
+check("no reading -> the line says unknown",
+      ab.attention_line({}) == "attention: unknown (Wikipedia views not read) - information only")
+check("attention_word", ab.attention_word({"attention": _a}) == "rising"
+      and ab.attention_word({"attention": dict(_a, rising=False)}) == "falling"
+      and ab.attention_word(None) == "unknown")
+check("the buy line carries the attention line on its own line",
+      ab.buy_head("$500 lot", 500.0, "attention: rising").split("\n")
+      == ["BUY NOW: $500 lot, then the 15% stop below as soon as it fills. If that stop fills: "
+          "about -$87 of the $500. Then a Robinhood price alert at that stop.", "attention: rising"])
+_logs = []
+_saved_log = ab.log
+ab.log = lambda m: _logs.append(m)
+try:
+    _sst = {"attention": _a}
+    ab.note_star(_sst, {"symbol": "XTZ"}, {"usd": 375.0}, NOV5, "base breakout")
+finally:
+    ab.log = _saved_log
+check("every sent star logs its size and the attention reading",
+      any("star logged: XTZ $375, attention rising" in m for m in _logs), _logs)
+tmp = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+json.dump({"date": "2000-01-01", "attention": dict(_a, tried=1.0)}, tmp)
+tmp.close()
+saved_path = ab.STATE_FILE
+ab.STATE_FILE = ab.Path(tmp.name)
+try:
+    fresh = ab.load_state()
+finally:
+    ab.STATE_FILE = saved_path
+    os.unlink(tmp.name)
+check("the attention reading survives the daily reset", fresh.get("attention", {}).get("avg7") == 2000, fresh)
 
 print()
 if FAILURES:
