@@ -360,9 +360,12 @@ state["base_seen"] = {"HYPE": NOW - 15 * 60}        # seen a quarter-hour ago
 ab.run_breakouts([hype], fired, NOW, False, state, {}, 85500.0)
 check("breakout alert sent", len(SENT) == 1, SENT)
 title, body, kw = SENT[0]
-check("gold-star title: the coin, BUY, the size, the day move",
-      title.startswith("HYPE - BUY $500 lot - base breakout +") and body.startswith("BUY NOW: $500 lot"),
+check("gold-star title: the coin, BUY, the graded size, the day move",
+      title.startswith("HYPE - BUY $375 lot (graded: 4.0%/day) - base breakout +")
+      and body.startswith("BUY NOW: $375 lot (graded: 4.0%/day)"),
       (title, body))
+check("gold-star body carries the attention line on its own line",
+      body.split("\n")[1].startswith("attention: "), body)
 check("body names the base and the trend", "14-day base" in body and "vs 50-day avg" in body, body)
 check("body carries the study line", "run 30% / stop 11%" in body)
 check("not on Bitstamp -> market-maker routing line", "market-maker routing only" in body, body)
