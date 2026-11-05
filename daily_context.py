@@ -352,7 +352,7 @@ def coin_lines(ctx):
     vol = ctx.get("vol30")
     if vol is not None and vol > HIGH_VOL_PCT:
         lines.append(f"high-vol coin ({vol:.1f}%/day): runs more often, stopped out "
-                     f"more, net a loser - half size")
+                     f"more, net a loser - graded size, half size at 6%/day and over")
     off = ctx.get("off_high_pct")
     if off is not None and off <= -DEEP_DIP_PCT:
         lines.append(f"RED: {-off:.0f}% below its 30-day high - deep dips are not "
