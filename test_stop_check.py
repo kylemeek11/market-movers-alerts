@@ -449,7 +449,8 @@ def test_config_is_loadable():
     from pathlib import Path
     cfg = json.loads(Path("positions.json").read_text())
     positions = cfg["positions"]
-    check("at least one position", len(positions) >= 1, len(positions))
+    # An empty book is a valid book (every lot sold, 2026-11-05).
+    check("positions is a list", isinstance(positions, list), type(positions))
     required = {"symbol", "product", "qty", "avg_cost", "spread_pct",
                 "current_stop", "room_override_pct", "decimals"}
     for p in positions:
