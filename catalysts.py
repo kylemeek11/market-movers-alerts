@@ -380,7 +380,7 @@ def run_weekly(config, state, fetch=get_json):
     lines = []
     if due:
         lines.append("ON THE MAP")
-        for _, trial, links in sorted(due):
+        for _, trial, links in sorted(due, key=lambda x: x[0]):
             lines.append("  " + describe(trial, links))
             for ticker, _dirn in links:
                 p = profiles.get(ticker)
@@ -391,7 +391,7 @@ def run_weekly(config, state, fetch=get_json):
     if found:
         lines.append("")
         lines.append("UNMAPPED (sponsor shown; map it or ignore it)")
-        for _, trial, _ in sorted(found)[:12]:
+        for _, trial, _ in sorted(found, key=lambda x: x[0])[:12]:
             lines.append("  " + describe(trial, []))
 
     lines.append("")
