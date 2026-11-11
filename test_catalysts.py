@@ -277,5 +277,33 @@ check("fetch_filings reads a gzipped SEC response",
 check("SEC_UA is never blank", bool(cat.SEC_UA.strip()), repr(cat.SEC_UA))
 
 print()
+print("Two catalysts on the same date do not crash the weekly digest")
+import copy as _copy
+_twin = _copy.deepcopy(OTX)
+_twin["protocolSection"]["identificationModule"]["nctId"] = "NCT00000001"
+
+
+def _tie_fetch(url, headers=None, tries=3):
+    if "filter.ids" in url:
+        return {"studies": []}
+    if "query.cond" in url:
+        return {"studies": [OTX, _twin], "totalCount": 2}
+    return None
+
+
+freeze("2026-12-10")          # both 29 days out, same primary completion date
+sent.clear()
+try:
+    cat.run_weekly(CONFIG, {"trials": {}, "filings": {}, "seen_discovery": []},
+                   fetch=_tie_fetch)
+    _tie_err = ""
+except TypeError as exc:
+    _tie_err = str(exc)
+check("same-date trials sort without comparing the records", not _tie_err, _tie_err)
+check("the digest still goes out with both listed",
+      len(sent) == 1 and sent[0]["body"].count("2027-01-08") == 2,
+      sent[0]["body"] if sent else "")
+
+print()
 print("FAILED: " + ", ".join(fails) if fails else "all passed")
 sys.exit(1 if fails else 0)
